@@ -1,0 +1,26 @@
+{
+  "name": "@technas/pay-next",
+  "version": "0.1.0",
+  "description": "Encaisser des paiements via Technas depuis une application Next.js.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/browser.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": ["./dist/browser.js"],
+  "engines": { "node": ">=18.17" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.6.3"
+  }
+}
