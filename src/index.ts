@@ -289,6 +289,46 @@ export function createTechnasPay(options: TechnasPayOptions) {
     verifyWebhook,
 
     /**
+     * Fabrique un webhook signé pour tester votre route sans attendre un vrai envoi.
+     * Refusé avec un secret réel. `await POST(await pay.createTestWebhook(...))`.
+     */
+    async createTestWebhook(
+      type: PaymentEvent["type"],
+      payment: { reference: string; amount: number; currency: string; commission?: number; metadata?: Record<string, unknown> },
+      url = "http://localhost/api/technas-pay",
+    ): Promise<Request> {
+      if (secrets().mode !== "test") {
+        throw new TechnasPayError("test_only", "createTestWebhook exige un secret tps_test_", 0);
+      }
+      const commission = payment.commission ?? 0;
+      const completed = type === "payment.completed";
+      const now = new Date().toISOString();
+      const body = JSON.stringify({
+        id: crypto.randomUUID(),
+        type,
+        created_at: now,
+        data: {
+          id: crypto.randomUUID(),
+          reference: payment.reference,
+          status: completed ? "completed" : "failed",
+          amount: payment.amount,
+          currency: payment.currency,
+          commission,
+          net_amount: payment.amount - commission,
+          metadata: payment.metadata ?? {},
+          completed_at: completed ? now : null,
+        },
+      });
+      const timestamp = Math.floor(Date.now() / 1000);
+      const signature = await hmacHex(secrets().webhookSecret, `${timestamp}.${body}`);
+      return new Request(url, {
+        method: "POST",
+        body,
+        headers: { "Content-Type": "application/json", [SIGNATURE_HEADER]: `t=${timestamp},s=${signature}` },
+      });
+    },
+
+    /**
      * Route Handler prêt à exporter : `export const POST = pay.webhookHandler({...})`.
      * Répond 2xx quand vos fonctions ont réussi. Sinon Technas relivre le même événement.
      */

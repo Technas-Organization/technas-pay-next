@@ -2,11 +2,15 @@
 
 Encaissez des paiements via Technas depuis une application Next.js 13.4 ou plus récente.
 
+Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de lire [AGENTS.md](AGENTS.md).
+
 ## 1. Installer
 
 ```bash
-npm install @technas/pay-next
+npm install github:Technas-Organization/technas-pay-next#v0.1.0
 ```
+
+Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
 
 Technas vous remet **un secret**. Mettez-le dans vos variables d'environnement serveur, sans préfixe `NEXT_PUBLIC_` :
 
@@ -81,3 +85,12 @@ export const POST = pay.webhookHandler({
 | `pay.getBalance()` | Ce que Technas vous doit, par devise |
 | `pay.getSettlements()` | Vos reversements |
 | `pay.verifyWebhook(corpsBrut, signature)` | Vérifier un webhook hors App Router |
+| `pay.createTestWebhook(type, paiement)` | Fabriquer un webhook signé pour vos tests (secret `tps_test_` seulement) |
+
+## Obtenir un secret
+
+Demandez-le à votre contact Technas : un secret de test pour intégrer, puis un secret réel avec vos conditions commerciales et votre numéro de reversement. Pour recevoir les webhooks en test, donnez-lui une adresse joignable depuis internet, par exemple un tunnel vers votre poste.
+
+## Licence
+
+[MIT](LICENSE). Le package est libre ; l'accès au service de paiement dépend de votre contrat avec Technas.

@@ -98,3 +98,14 @@ test("une fonction qui échoue fait échouer la réponse, pour que Technas reliv
 test("l'importer côté navigateur casse immédiatement", async () => {
   await assert.rejects(import("../dist/browser.js"), /côté serveur/);
 });
+
+test("createTestWebhook passe la vérification, et refuse un secret réel", async () => {
+  const pay = createTechnasPay({ secret: SECRET });
+  let received;
+  const request = await pay.createTestWebhook("payment.completed", { reference: "cmd_9", amount: 5000, currency: "XOF", commission: 425 });
+  const response = await pay.webhookHandler({ onCompleted: (e) => { received = e; } })(request);
+  assert.equal(response.status, 200);
+  assert.equal(received.payment.netAmount, 4575);
+  const live = createTechnasPay({ secret: SECRET.replace("tps_test_", "tps_live_") });
+  await assert.rejects(live.createTestWebhook("payment.failed", { reference: "r", amount: 1, currency: "XOF" }), (e) => e.code === "test_only");
+});
