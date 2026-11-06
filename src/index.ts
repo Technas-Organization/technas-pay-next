@@ -270,6 +270,19 @@ export function createTechnasPay(options: TechnasPayOptions) {
       return parsePayment(await call<any>("GET", `/v1/payments?reference=${encodeURIComponent(reference)}`));
     },
 
+    /** Vos paiements, du plus récent au plus ancien, par pages. */
+    async listTransactions(
+      options: { limit?: number; status?: Exclude<PaymentStatus, "creating">; cursor?: string } = {},
+    ): Promise<{ items: Payment[]; nextCursor: string | null }> {
+      const query = new URLSearchParams();
+      if (options.limit !== undefined) query.set("limit", String(options.limit));
+      if (options.status) query.set("status", options.status);
+      if (options.cursor) query.set("cursor", options.cursor);
+      const suffix = query.size ? `?${query}` : "";
+      const raw = await call<any>("GET", `/v1/transactions${suffix}`);
+      return { items: raw.items.map(parsePayment), nextCursor: raw.next_cursor ?? null };
+    },
+
     /** Ce que Technas vous doit, par devise. */
     async getBalance(): Promise<Balance[]> {
       return call<Balance[]>("GET", "/v1/balance");

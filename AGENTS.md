@@ -10,7 +10,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.1.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.2.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -32,6 +32,13 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 - **Ne rattrapez pas les erreurs de `onCompleted`** pour répondre 200 : une erreur doit remonter pour que le webhook soit relivré.
 - **Une référence = un paiement.** Réutilisez celle de la commande pour une reprise. Si `error.retryable` est vrai, refaites le même appel avec la même référence.
 - **Conservez le corps brut** : `webhookHandler` le lit lui-même. Ne le passez pas par `request.json()` avant.
+
+## Afficher le compte
+
+- `pay.getBalance()` : le solde, par devise, déjà net de la commission Technas.
+- `pay.listTransactions({ limit, status, cursor })` : l'historique, du plus récent au plus ancien. Passez `nextCursor` pour la page suivante. `status` : `pending`, `completed`, `failed`, `amount_mismatch`.
+
+Appelez-les côté serveur uniquement. Il n'y a pas de retrait par API : les reversements se règlent avec Technas.
 
 ## Vérifier l'intégration
 

@@ -109,3 +109,19 @@ test("createTestWebhook passe la vérification, et refuse un secret réel", asyn
   const live = createTechnasPay({ secret: SECRET.replace("tps_test_", "tps_live_") });
   await assert.rejects(live.createTestWebhook("payment.failed", { reference: "r", amount: 1, currency: "XOF" }), (e) => e.code === "test_only");
 });
+
+test("listTransactions convertit les champs et transmet filtres et curseur", async () => {
+  let url;
+  const pay = createTechnasPay({
+    secret: SECRET,
+    baseUrl: "https://gw.test",
+    fetch: async (u) => {
+      url = u;
+      return Response.json({ items: [{ id: "p1", reference: "c", amount: 5000, currency: "XOF", commission: 0, net_amount: 5000, status: "completed", created_at: "x" }], next_cursor: "suite" });
+    },
+  });
+  const page = await pay.listTransactions({ limit: 10, status: "completed", cursor: "abc" });
+  assert.equal(url, "https://gw.test/v1/transactions?limit=10&status=completed&cursor=abc");
+  assert.equal(page.items[0].netAmount, 5000);
+  assert.equal(page.nextCursor, "suite");
+});
