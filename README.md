@@ -7,7 +7,7 @@ Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de 
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.1.0
+npm install github:Technas-Organization/technas-pay-next#v0.2.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -82,8 +82,8 @@ export const POST = pay.webhookHandler({
 |---|---|
 | `pay.getPayment(id)` | État d'un paiement |
 | `pay.getPaymentByReference(reference)` | Rattraper un webhook manqué |
-| `pay.getBalance()` | Ce que Technas vous doit, par devise |
-| `pay.getSettlements()` | Vos reversements |
+| `pay.getBalance()` | Votre solde : ce que Technas vous doit, par devise, après commission |
+| `pay.listTransactions({ limit, status, cursor })` | L'historique de vos paiements, par pages |
 | `pay.verifyWebhook(corpsBrut, signature)` | Vérifier un webhook hors App Router |
 | `pay.createTestWebhook(type, paiement)` | Fabriquer un webhook signé pour vos tests (secret `tps_test_` seulement) |
 
