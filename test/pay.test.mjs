@@ -126,7 +126,7 @@ test("listTransactions convertit les champs et transmet filtres et curseur", asy
   assert.equal(page.nextCursor, "suite");
 });
 
-test("setPayoutDestination envoie le numéro au bon format et lit l'état", async () => {
+test("setPayoutDestination envoie le numéro et rend l'état par devise", async () => {
   const seen = [];
   const pay = createTechnasPay({
     secret: SECRET,
@@ -134,24 +134,28 @@ test("setPayoutDestination envoie le numéro au bon format et lit l'état", asyn
     fetch: async (url, init) => {
       seen.push({ url, init });
       return Response.json({
-        current: { country: "TG", network: "moov_tg", phone: "+22891111111", beneficiary_name: "Blexima" },
-        pending: { country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Blexima", effective_at: "2026-11-13T10:00:00Z" },
-      });
+        destinations: [{
+          currency: "XOF",
+          current: { currency: "XOF", country: "TG", network: "moov_tg", phone: "+22891111111", beneficiary_name: "Blexima", status: "active", effective_at: "2026-11-11T10:00:00Z" },
+          pending: { currency: "XOF", country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Blexima", status: "awaiting_confirmation", effective_at: null, confirm_expires_at: "2026-11-12T10:00:00Z" },
+        }],
+      }, { status: 202 });
     },
   });
   const etat = await pay.setPayoutDestination({ country: "TG", network: "togocel", phone: "+22892222222", beneficiaryName: "Blexima" });
   assert.equal(seen[0].url, "https://gw.test/v1/payout-destination");
   assert.equal(seen[0].init.method, "PUT");
   assert.deepEqual(JSON.parse(seen[0].init.body), { country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Blexima" });
-  assert.equal(etat.current.phone, "+22891111111");
-  assert.equal(etat.pending.effectiveAt, "2026-11-13T10:00:00Z");
-  assert.equal(etat.pending.beneficiaryName, "Blexima");
+  const [xof] = etat.destinations;
+  assert.equal(xof.current.phone, "+22891111111");
+  assert.equal(xof.pending.status, "awaiting_confirmation");
+  assert.equal(xof.pending.confirmExpiresAt, "2026-11-12T10:00:00Z");
 });
 
 test("getPayoutNetworks interroge le pays demandé", async () => {
   let url;
-  const pay = createTechnasPay({ secret: SECRET, baseUrl: "https://gw.test", fetch: async (u) => ((url = u), Response.json([{ code: "moov_tg", name: "Moov" }])) });
-  assert.deepEqual(await pay.getPayoutNetworks("TG"), [{ code: "moov_tg", name: "Moov" }]);
+  const pay = createTechnasPay({ secret: SECRET, baseUrl: "https://gw.test", fetch: async (u) => ((url = u), Response.json([{ code: "moov_tg", name: "Moov", currency: "XOF" }])) });
+  assert.deepEqual(await pay.getPayoutNetworks("TG"), [{ code: "moov_tg", name: "Moov", currency: "XOF" }]);
   assert.equal(url, "https://gw.test/v1/payout-networks?country=TG");
 });
 
@@ -159,7 +163,7 @@ test("l'avis de changement de numéro arrive dans onPayoutDestination", async ()
   const pay = createTechnasPay({ secret: SECRET });
   const body = JSON.stringify({
     id: "evt_2", type: "payout_destination.change_scheduled", created_at: "2026-11-11T10:00:00Z",
-    data: { country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Blexima", effective_at: "2026-11-13T10:00:00Z" },
+    data: { currency: "XOF", country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Blexima", status: "scheduled", effective_at: "2026-11-13T10:00:00Z" },
   });
   let recu;
   const res = await pay.webhookHandler({ onPayoutDestination: (e) => (recu = e), onCompleted: () => assert.fail() })(request(body, sign(body)));

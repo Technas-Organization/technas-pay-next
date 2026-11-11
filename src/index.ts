@@ -81,16 +81,33 @@ export interface PayoutDestination {
   beneficiaryName: string;
 }
 
+export interface PayoutDestinationView extends PayoutDestination {
+  currency: string;
+  /**
+   * `awaiting_confirmation` : le responsable du compte a reçu un e-mail, rien ne change avant son clic.
+   * `scheduled` : confirmé, actif à `effectiveAt` (48 h après la confirmation d'un changement).
+   * `active` : reçoit les reversements de cette devise.
+   */
+  status: "awaiting_confirmation" | "scheduled" | "active";
+  effectiveAt: string | null;
+  confirmExpiresAt: string | null;
+}
+
+/** Un numéro par devise : on ne verse pas des XAF sur un numéro du Togo. */
 export interface PayoutDestinationState {
-  /** `null` : aucun numéro, aucun reversement ne peut partir. */
-  current: PayoutDestination | null;
-  /** Un changement en attente, actif à `effectiveAt` (48 h après la demande). */
-  pending: (PayoutDestination & { effectiveAt: string }) | null;
+  destinations: {
+    currency: string;
+    /** `null` : aucun reversement ne peut partir dans cette devise ; l'argent attend sur le solde. */
+    current: PayoutDestinationView | null;
+    pending: PayoutDestinationView | null;
+  }[];
 }
 
 export interface PayoutNetwork {
   code: string;
   name: string;
+  /** La devise versée sur ce réseau. */
+  currency: string | null;
 }
 
 export interface PayoutDestinationEvent {
@@ -102,7 +119,7 @@ export interface PayoutDestinationEvent {
    */
   type: "payout_destination.change_scheduled" | "payout_destination.updated";
   createdAt: string;
-  destination: PayoutDestination & { effectiveAt?: string };
+  destination: PayoutDestinationView;
 }
 
 /** Un type d'événement que cette version du package ne connaît pas encore. */
@@ -216,8 +233,17 @@ function parsePayment(raw: any): Payment {
   };
 }
 
-function parseDestination(raw: any): PayoutDestination {
-  return { country: raw.country, network: raw.network, phone: raw.phone, beneficiaryName: raw.beneficiary_name };
+function parseDestination(raw: any): PayoutDestinationView {
+  return {
+    currency: raw.currency,
+    country: raw.country,
+    network: raw.network,
+    phone: raw.phone,
+    beneficiaryName: raw.beneficiary_name,
+    status: raw.status,
+    effectiveAt: raw.effective_at ?? null,
+    confirmExpiresAt: raw.confirm_expires_at ?? null,
+  };
 }
 
 function parseEvent(raw: any): TechnasPayEvent {
@@ -228,7 +254,7 @@ function parseEvent(raw: any): TechnasPayEvent {
       id: raw.id,
       type: raw.type,
       createdAt: raw.created_at,
-      destination: { ...parseDestination(d), ...(d.effective_at ? { effectiveAt: d.effective_at } : {}) },
+      destination: parseDestination(d),
     };
   }
   if (raw.type !== "payment.completed" && raw.type !== "payment.failed") {
@@ -255,8 +281,11 @@ function parseEvent(raw: any): TechnasPayEvent {
 
 function parseDestinationState(raw: any): PayoutDestinationState {
   return {
-    current: raw?.current ? parseDestination(raw.current) : null,
-    pending: raw?.pending ? { ...parseDestination(raw.pending), effectiveAt: raw.pending.effective_at } : null,
+    destinations: (raw?.destinations ?? []).map((d: any) => ({
+      currency: d.currency,
+      current: d.current ? parseDestination(d.current) : null,
+      pending: d.pending ? parseDestination(d.pending) : null,
+    })),
   };
 }
 
@@ -379,15 +408,17 @@ export function createTechnasPay(options: TechnasPayOptions) {
       return call<PayoutNetwork[]>("GET", `/v1/payout-networks?country=${encodeURIComponent(country)}`);
     },
 
-    /** Votre numéro de reversement actif, et un changement en attente s'il y en a un. */
+    /** Vos numéros de reversement, un par devise, et les changements en attente. */
     async getPayoutDestination(): Promise<PayoutDestinationState> {
       return parseDestinationState(await call<any>("GET", "/v1/payout-destination"));
     },
 
     /**
-     * Fixe le numéro où Technas vous reverse votre solde. Le premier numéro est actif
-     * tout de suite ; un CHANGEMENT l'est 48 h plus tard, annoncé par un webhook
-     * `payout_destination.change_scheduled`. Reposer le numéro actif annule un changement.
+     * Demande que vos reversements dans la devise de ce réseau arrivent sur ce numéro.
+     * RIEN ne change avant que le responsable de votre compte ait cliqué le lien reçu
+     * par e-mail (valable 24 h). Premier numéro de la devise : actif au clic ; changement :
+     * actif 48 h après, annoncé par un webhook `payout_destination.change_scheduled`.
+     * Reposer le numéro actif annule un changement en attente.
      */
     async setPayoutDestination(destination: PayoutDestination): Promise<PayoutDestinationState> {
       return parseDestinationState(
