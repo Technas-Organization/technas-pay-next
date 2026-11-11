@@ -10,7 +10,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.2.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.3.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -38,7 +38,10 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 - `pay.getBalance()` : le solde, par devise, déjà net de la commission Technas.
 - `pay.listTransactions({ limit, status, cursor })` : l'historique, du plus récent au plus ancien. Passez `nextCursor` pour la page suivante. `status` : `pending`, `completed`, `failed`, `amount_mismatch`.
 
-Appelez-les côté serveur uniquement. Il n'y a pas de retrait par API : les reversements se règlent avec Technas.
+- `pay.getSettlements()` : les reversements ; chacun porte `fee`, les frais du versement déduits de `amount`.
+- `pay.getPayoutNetworks(country)`, `pay.getPayoutDestination()`, `pay.setPayoutDestination({ country, network, phone, beneficiaryName })` : le numéro de reversement. Le premier est actif tout de suite, un changement 48 h plus tard, annoncé par un webhook reçu dans `onPayoutDestination`.
+
+Appelez-les côté serveur uniquement. Les reversements partent chaque semaine, à l'initiative de Technas : il n'y a pas de retrait à la demande. Ne proposez pas de modifier le numéro de reversement depuis une page publique : réservez-le à un administrateur du site.
 
 ## Vérifier l'intégration
 

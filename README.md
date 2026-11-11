@@ -7,7 +7,7 @@ Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de 
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.2.0
+npm install github:Technas-Organization/technas-pay-next#v0.3.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -84,12 +84,31 @@ export const POST = pay.webhookHandler({
 | `pay.getPaymentByReference(reference)` | Rattraper un webhook manqué |
 | `pay.getBalance()` | Votre solde : ce que Technas vous doit, par devise, après commission |
 | `pay.listTransactions({ limit, status, cursor })` | L'historique de vos paiements, par pages |
+| `pay.getSettlements()` | Vos reversements : `amount` quitte votre solde, `fee` (frais mobile money, à votre charge) en est déduit |
+| `pay.getPayoutNetworks(pays)` | Les réseaux mobile money qui acceptent un reversement dans ce pays |
+| `pay.getPayoutDestination()` / `pay.setPayoutDestination({...})` | Votre numéro de reversement (voir ci-dessous) |
 | `pay.verifyWebhook(corpsBrut, signature)` | Vérifier un webhook hors App Router |
 | `pay.createTestWebhook(type, paiement)` | Fabriquer un webhook signé pour vos tests (secret `tps_test_` seulement) |
 
+## Votre numéro de reversement
+
+C'est vous qui le fixez, depuis votre serveur :
+
+```ts
+const reseaux = await pay.getPayoutNetworks("TG"); // [{ code: "moov_tg", name: "Moov Money Togo" }, …]
+await pay.setPayoutDestination({ country: "TG", network: "moov_tg", phone: "+22890000000", beneficiaryName: "Ma Société SARL" });
+```
+
+- Le **premier** numéro est actif tout de suite.
+- Un **changement** n'est actif que **48 h plus tard**. Technas vous l'annonce par un webhook `payout_destination.change_scheduled` (puis `payout_destination.updated`), reçu par `onPayoutDestination`. Si ce n'est pas vous qui l'avez demandé, prévenez Technas immédiatement.
+- Reposer le numéro actif annule un changement en attente.
+- Un réseau qui n'accepte pas de reversement dans ce pays est refusé (`invalid_payout_network`).
+
+Technas reverse votre solde chaque semaine dès qu'il atteint 10 000 XOF ; les frais du versement mobile money sont déduits de ce qui part.
+
 ## Obtenir un secret
 
-Demandez-le à votre contact Technas : un secret de test pour intégrer, puis un secret réel avec vos conditions commerciales et votre numéro de reversement. Pour recevoir les webhooks en test, donnez-lui une adresse joignable depuis internet, par exemple un tunnel vers votre poste.
+Demandez-le à votre contact Technas : un secret de test pour intégrer, puis un secret réel avec vos conditions commerciales. Pour recevoir les webhooks en test, donnez-lui une adresse joignable depuis internet, par exemple un tunnel vers votre poste.
 
 ## Licence
 

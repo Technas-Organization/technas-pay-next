@@ -42,7 +42,10 @@ export interface Balance {
 
 export interface Settlement {
   id: string;
+  /** Ce qui a quitté votre solde. */
   amount: number;
+  /** Frais du versement mobile money, à votre charge : vous recevez `amount - fee`. */
+  fee: number;
   currency: string;
   status: "pending" | "completed" | "failed";
   createdAt: string;
@@ -66,10 +69,58 @@ export interface PaymentEvent {
   };
 }
 
+/** Le numéro mobile money où Technas vous reverse votre solde. */
+export interface PayoutDestination {
+  /** Code pays ISO à deux lettres : "TG", "BJ", "CM"… */
+  country: string;
+  /** Code réseau de `getPayoutNetworks(country)` : "moov_tg", "togocel"… */
+  network: string;
+  /** Format international : "+22890000000". */
+  phone: string;
+  /** Nom du titulaire du compte mobile money. */
+  beneficiaryName: string;
+}
+
+export interface PayoutDestinationState {
+  /** `null` : aucun numéro, aucun reversement ne peut partir. */
+  current: PayoutDestination | null;
+  /** Un changement en attente, actif à `effectiveAt` (48 h après la demande). */
+  pending: (PayoutDestination & { effectiveAt: string }) | null;
+}
+
+export interface PayoutNetwork {
+  code: string;
+  name: string;
+}
+
+export interface PayoutDestinationEvent {
+  id: string;
+  /**
+   * `payout_destination.change_scheduled` : un nouveau numéro a été demandé, actif dans 48 h.
+   * Si ce n'est pas vous, prévenez Technas tout de suite.
+   * `payout_destination.updated` : ce numéro reçoit désormais vos reversements.
+   */
+  type: "payout_destination.change_scheduled" | "payout_destination.updated";
+  createdAt: string;
+  destination: PayoutDestination & { effectiveAt?: string };
+}
+
+/** Un type d'événement que cette version du package ne connaît pas encore. */
+export interface OtherEvent {
+  id: string;
+  type: string;
+  createdAt: string;
+  data: Record<string, unknown>;
+}
+
+export type TechnasPayEvent = PaymentEvent | PayoutDestinationEvent | OtherEvent;
+
 export interface WebhookHandlers {
   onCompleted?: (event: PaymentEvent) => void | Promise<void>;
   /** Un refus n'est pas définitif : le client peut réessayer et `onCompleted` arriver ensuite. */
   onFailed?: (event: PaymentEvent) => void | Promise<void>;
+  /** Changement de numéro de reversement demandé ou devenu actif. */
+  onPayoutDestination?: (event: PayoutDestinationEvent) => void | Promise<void>;
 }
 
 export interface TechnasPayOptions {
@@ -165,9 +216,25 @@ function parsePayment(raw: any): Payment {
   };
 }
 
-function parseEvent(raw: any): PaymentEvent {
+function parseDestination(raw: any): PayoutDestination {
+  return { country: raw.country, network: raw.network, phone: raw.phone, beneficiaryName: raw.beneficiary_name };
+}
+
+function parseEvent(raw: any): TechnasPayEvent {
   const d = raw?.data;
-  if (!raw?.id || !raw?.type || !d?.id) throw new WebhookVerificationError("Webhook illisible");
+  if (!raw?.id || !raw?.type || typeof d !== "object" || d === null) throw new WebhookVerificationError("Webhook illisible");
+  if (raw.type === "payout_destination.change_scheduled" || raw.type === "payout_destination.updated") {
+    return {
+      id: raw.id,
+      type: raw.type,
+      createdAt: raw.created_at,
+      destination: { ...parseDestination(d), ...(d.effective_at ? { effectiveAt: d.effective_at } : {}) },
+    };
+  }
+  if (raw.type !== "payment.completed" && raw.type !== "payment.failed") {
+    return { id: raw.id, type: raw.type, createdAt: raw.created_at, data: d };
+  }
+  if (!d.id) throw new WebhookVerificationError("Webhook illisible");
   return {
     id: raw.id,
     type: raw.type,
@@ -183,6 +250,13 @@ function parseEvent(raw: any): PaymentEvent {
       metadata: d.metadata ?? {},
       completedAt: d.completed_at ?? null,
     },
+  };
+}
+
+function parseDestinationState(raw: any): PayoutDestinationState {
+  return {
+    current: raw?.current ? parseDestination(raw.current) : null,
+    pending: raw?.pending ? { ...parseDestination(raw.pending), effectiveAt: raw.pending.effective_at } : null,
   };
 }
 
@@ -223,7 +297,7 @@ export function createTechnasPay(options: TechnasPayOptions) {
   }
 
   /** Vérifie la signature sur le corps BRUT et rend l'événement. */
-  async function verifyWebhook(rawBody: string, signatureHeader: string | null): Promise<PaymentEvent> {
+  async function verifyWebhook(rawBody: string, signatureHeader: string | null): Promise<TechnasPayEvent> {
     const match = /^t=(\d+),s=([0-9a-f]+)$/i.exec(signatureHeader ?? "");
     if (!match) throw new WebhookVerificationError("Signature absente ou mal formée");
     const timestamp = Number(match[1]);
@@ -293,10 +367,37 @@ export function createTechnasPay(options: TechnasPayOptions) {
       return rows.map((r) => ({
         id: r.id,
         amount: r.amount,
+        fee: r.fee ?? 0,
         currency: r.currency,
         status: r.status,
         createdAt: r.created_at,
       }));
+    },
+
+    /** Les réseaux mobile money qui acceptent un reversement dans ce pays. */
+    async getPayoutNetworks(country: string): Promise<PayoutNetwork[]> {
+      return call<PayoutNetwork[]>("GET", `/v1/payout-networks?country=${encodeURIComponent(country)}`);
+    },
+
+    /** Votre numéro de reversement actif, et un changement en attente s'il y en a un. */
+    async getPayoutDestination(): Promise<PayoutDestinationState> {
+      return parseDestinationState(await call<any>("GET", "/v1/payout-destination"));
+    },
+
+    /**
+     * Fixe le numéro où Technas vous reverse votre solde. Le premier numéro est actif
+     * tout de suite ; un CHANGEMENT l'est 48 h plus tard, annoncé par un webhook
+     * `payout_destination.change_scheduled`. Reposer le numéro actif annule un changement.
+     */
+    async setPayoutDestination(destination: PayoutDestination): Promise<PayoutDestinationState> {
+      return parseDestinationState(
+        await call<any>("PUT", "/v1/payout-destination", {
+          country: destination.country,
+          network: destination.network,
+          phone: destination.phone,
+          beneficiary_name: destination.beneficiaryName,
+        }),
+      );
     },
 
     verifyWebhook,
@@ -348,7 +449,7 @@ export function createTechnasPay(options: TechnasPayOptions) {
     webhookHandler(handlers: WebhookHandlers) {
       return async (request: Request): Promise<Response> => {
         const rawBody = await request.text();
-        let event: PaymentEvent;
+        let event: TechnasPayEvent;
         try {
           event = await verifyWebhook(rawBody, request.headers.get(SIGNATURE_HEADER));
         } catch (error) {
@@ -357,8 +458,12 @@ export function createTechnasPay(options: TechnasPayOptions) {
           }
           throw error;
         }
-        if (event.type === "payment.completed") await handlers.onCompleted?.(event);
-        else if (event.type === "payment.failed") await handlers.onFailed?.(event);
+        if (event.type === "payment.completed") await handlers.onCompleted?.(event as PaymentEvent);
+        else if (event.type === "payment.failed") await handlers.onFailed?.(event as PaymentEvent);
+        else if (event.type.startsWith("payout_destination.")) {
+          await handlers.onPayoutDestination?.(event as PayoutDestinationEvent);
+        }
+        // Un type inconnu est acquitté : il ne doit pas être relivré pendant trois jours.
         return Response.json({ received: true });
       };
     },
