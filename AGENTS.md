@@ -10,7 +10,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.3.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.4.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -39,7 +39,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 - `pay.listTransactions({ limit, status, cursor })` : l'historique, du plus récent au plus ancien. Passez `nextCursor` pour la page suivante. `status` : `pending`, `completed`, `failed`, `amount_mismatch`.
 
 - `pay.getSettlements()` : les reversements ; chacun porte `fee`, les frais du versement déduits de `amount`.
-- `pay.getPayoutNetworks(country)`, `pay.getPayoutDestination()`, `pay.setPayoutDestination({ country, network, phone, beneficiaryName })` : le numéro de reversement. Le premier est actif tout de suite, un changement 48 h plus tard, annoncé par un webhook reçu dans `onPayoutDestination`.
+- `pay.getPayoutNetworks(country)`, `pay.getPayoutDestination()`, `pay.setPayoutDestination({ country, network, phone, beneficiaryName })` : le numéro de reversement, un par devise. `setPayoutDestination` répond 202 : rien ne change avant que le responsable du compte clique le lien reçu par e-mail. Ne dites jamais à l'utilisateur que le numéro est enregistré tant que `status` n'est pas `active`. Un changement devient actif 48 h après la confirmation, annoncé par un webhook reçu dans `onPayoutDestination`.
 
 Appelez-les côté serveur uniquement. Les reversements partent chaque semaine, à l'initiative de Technas : il n'y a pas de retrait à la demande. Ne proposez pas de modifier le numéro de reversement depuis une page publique : réservez-le à un administrateur du site.
 

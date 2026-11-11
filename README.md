@@ -7,7 +7,7 @@ Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de 
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.3.0
+npm install github:Technas-Organization/technas-pay-next#v0.4.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -92,19 +92,19 @@ export const POST = pay.webhookHandler({
 
 ## Votre numéro de reversement
 
-C'est vous qui le fixez, depuis votre serveur :
+C'est vous qui le fixez, depuis votre serveur, **un par devise** :
 
 ```ts
-const reseaux = await pay.getPayoutNetworks("TG"); // [{ code: "moov_tg", name: "Moov Money Togo" }, …]
+const reseaux = await pay.getPayoutNetworks("TG"); // [{ code: "moov_tg", name: "Moov Money Togo", currency: "XOF" }, …]
 await pay.setPayoutDestination({ country: "TG", network: "moov_tg", phone: "+22890000000", beneficiaryName: "Ma Société SARL" });
 ```
 
-- Le **premier** numéro est actif tout de suite.
-- Un **changement** n'est actif que **48 h plus tard**. Technas vous l'annonce par un webhook `payout_destination.change_scheduled` (puis `payout_destination.updated`), reçu par `onPayoutDestination`. Si ce n'est pas vous qui l'avez demandé, prévenez Technas immédiatement.
-- Reposer le numéro actif annule un changement en attente.
-- Un réseau qui n'accepte pas de reversement dans ce pays est refusé (`invalid_payout_network`).
+- **Rien ne change avant la confirmation** : le responsable de votre compte (adresse e-mail déclarée à Technas) reçoit un lien, valable 24 h. Une clé d'API volée ne suffit donc pas à détourner vos reversements.
+- Le **premier** numéro d'une devise est actif dès le clic. Un **changement** l'est **48 h après** ; il vous est annoncé par un webhook `payout_destination.change_scheduled`, reçu par `onPayoutDestination`.
+- Reposer le numéro actif annule un changement en attente. Un réseau qui n'accepte pas de reversement dans ce pays est refusé (`invalid_payout_network`).
+- `pay.getPayoutDestination()` rend vos numéros par devise et leur état (`awaiting_confirmation`, `scheduled`, `active`).
 
-Technas reverse votre solde chaque semaine dès qu'il atteint 10 000 XOF ; les frais du versement mobile money sont déduits de ce qui part.
+Technas reverse votre solde chaque semaine dès qu'il atteint 10 000 dans la devise ; les frais du versement mobile money sont déduits de ce qui part. Tant qu'une devise n'a pas de numéro confirmé, son argent attend sur votre solde.
 
 ## Obtenir un secret
 
