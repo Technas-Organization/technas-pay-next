@@ -365,3 +365,50 @@ test("un paiement hors zone porte le montant d'origine et le change", async () =
   assert.equal(recu.payment.fx.francPerUnit, 40.9973);
   assert.equal(recu.payment.fx.creditedCurrency, "GHS");
 });
+
+test("setFxMode : le risque doit être accepté explicitement", async () => {
+  const seen = [];
+  const pay = createTechnasPay({
+    secret: SECRET, baseUrl: "https://gw.test",
+    fetch: async (url, init) => {
+      seen.push(JSON.parse(init.body));
+      if (!JSON.parse(init.body).accept_risk) {
+        return Response.json({ code: "risk_not_accepted", message: "m", risk: "Vous portez tout l'écart.", risk_version: "v" }, { status: 422 });
+      }
+      return Response.json({ mode: "local", home_currency: "XOF", markup_pct: 2, risk_accepted_at: "x", risk_version: "v", risks: {}, country_rules: { allowed: null, excluded: [] }, countries: [] });
+    },
+  });
+  await assert.rejects(pay.setFxMode({ mode: "local" }), (e) => e.code === "risk_not_accepted" && e.details.risk === "Vous portez tout l'écart.");
+  const fx = await pay.setFxMode({ mode: "local", acceptRisk: true, markupPct: 2 });
+  assert.deepEqual(seen[1], { mode: "local", accept_risk: true, markup_pct: 2 });
+  assert.equal(fx.markupPct, 2);
+});
+
+test("askForPayment : pays autorisés, exclus, et choix du pays avec devise imposée", async () => {
+  const { pay, sent } = payCapturingCurrency();
+  await pay.askForPayment({ ...ASK, currency: "XAF", askCountry: true, allowedCountries: ["CM", "GA"], excludedCountries: ["GA"], customer: { email: "a@b.co", name: "A" } });
+  assert.equal(sent[0].currency, "XAF");
+  assert.equal(sent[0].ask_country, true);
+  assert.deepEqual(sent[0].allowed_countries, ["CM", "GA"]);
+  assert.deepEqual(sent[0].excluded_countries, ["GA"]);
+  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A" } });
+  assert.equal("allowed_countries" in sent[1], false);
+});
+
+test("setCountryRules et les avis balance.converted, fx_mode.updated", async () => {
+  let corps;
+  const pay = createTechnasPay({ secret: SECRET, fetch: async (_u, init) => ((corps = JSON.parse(init.body)), Response.json({ allowed: ["TG"], excluded: [] })) });
+  await pay.setCountryRules({ allowed: ["TG"] });
+  assert.deepEqual(corps, { allowed: ["TG"], excluded: [] });
+  const recus = [];
+  const handler = createTechnasPay({ secret: SECRET }).webhookHandler({ onBalanceConverted: (e) => recus.push(e), onFxModeUpdated: (e) => recus.push(e) });
+  for (const [type, data] of [
+    ["balance.converted", { id: "c", from_currency: "GHS", from_amount: 100, to_currency: "XOF", gross_amount: 4000, cost: 80, credited_amount: 3920, effective_rate: 39.2 }],
+    ["fx_mode.updated", { mode: "local", previous_mode: "none", markup_pct: 0, home_currency: "XOF" }],
+  ]) {
+    const body = JSON.stringify({ id: `e-${type}`, type, created_at: "x", data });
+    assert.equal((await handler(request(body, sign(body)))).status, 200);
+  }
+  assert.equal(recus[0].conversion.creditedAmount, 3920);
+  assert.equal(recus[1].fx.previousMode, "none");
+});

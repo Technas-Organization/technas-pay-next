@@ -20,7 +20,9 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | Savoir que le remboursement est arrivé | webhook `onRefund` (`refund.completed`, `refund.failed` ou `refund.recorded`) |
 | Recharger le solde pour rembourser | `pay.topUpBalance({ amount, currency })`, puis ouvrir `checkoutUrl` ; webhook `onTopUp` |
 | Afficher le solde | `pay.getBalance()` |
-| Savoir quels pays hors zone CFA sont ouverts | `pay.getFxMode()` |
+| Savoir quels pays hors zone CFA sont ouverts, et les risques | `pay.getFxMode()` |
+| Activer une option hors zone CFA (après accord explicite de l'utilisateur) | `pay.setFxMode({ mode, acceptRisk: true, markupPct? })` |
+| Choisir les pays où vendre | `pay.setCountryRules({ allowed?, excluded? })`, ou `allowedCountries` / `excludedCountries` par paiement |
 | Afficher l'historique | `pay.listTransactions({ limit, status, cursor })` |
 | Reversements, numéro de reversement | `pay.getSettlements()`, `pay.getPayoutDestination()`, `pay.setPayoutDestination(...)` |
 | Tester la route webhook | `pay.createTestWebhook(type, paiement)` |
@@ -56,15 +58,35 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
   - La devise suit le pays du client : TG → XOF, CM → XAF, pour le même montant.
   - Sans pays, le client choisit le sien sur la page de paiement.
 - **Ne fixez pas `defaultCurrency`** : il empêcherait ce choix.
-- **Hors zone franc CFA** (Ghana, Nigeria…) : ne passez toujours pas `currency`, le montant reste en F CFA.
-  - Ce qui est possible dépend du mode de change du compte : `pay.getFxMode()`.
-  - Mode `none` : seuls les pays de la zone CFA sont proposés.
-  - Mode `local` : le client paie au cours du jour dans sa monnaie, et la page lui montre le montant avant de payer.
-  - Ne promettez jamais à l'utilisateur un pays que `getFxMode()` ne donne pas `available: true`.
-  - Si `reason` vaut `no_payout_number`, il manque un numéro de reversement confirmé dans cette devise : `setPayoutDestination`, réservé à un administrateur.
 - **Hors zone, les montants peuvent avoir des centimes** (`121.96` GHS) : stockez-les en décimal, ne les arrondissez pas.
 - Dans le webhook, `event.payment.originalAmount` est le montant demandé en F CFA ; `amount` et `currency` sont ce qui a été payé.
-- **La devise payée fait foi** : lisez `event.payment.currency` dans le webhook. Un même montant peut arriver en XOF ou en XAF.
+
+## Où vendre (tout est facultatif)
+
+- **Le client choisit son pays** : sans `currency` ni `customer.country`, la page le lui demande.
+- **Pays fixé** : `customer.country`.
+- **Pour tout le compte** : `pay.setCountryRules({ allowed, excluded })`. Codes ISO à deux lettres.
+- **Pour un seul paiement** : `allowedCountries` / `excludedCountries` dans `askForPayment`.
+- **Devise imposée** : `currency: "XAF"` ; ajoutez `askCountry: true` pour que le client choisisse parmi les pays de cette devise.
+- **Pays refusé** : `country_not_allowed`. Ne contournez pas ce refus : c'est le choix du marchand.
+
+## Clients hors zone franc CFA : une option à risque, décidée par l'utilisateur
+
+- **Montant** : il reste en F CFA, ne passez pas `currency`.
+- **C'est une option** : `pay.getFxMode()` dit laquelle est active, quels pays sont ouverts, et ce qui manque à chacun (`reason`).
+- **Technas ne couvre aucun risque de change.** Avant d'activer `local` ou `converted` :
+  1. lisez `(await pay.getFxMode()).risks[mode]` (et `risks.markup` si un supplément est prévu) ;
+  2. **montrez ce texte à l'utilisateur, en entier, et expliquez-le simplement** : ce qu'il peut perdre, dans quelle monnaie il sera payé, quel numéro de reversement il lui faut ;
+  3. attendez son accord explicite, en toutes lettres ;
+  4. seulement ensuite, appelez `pay.setFxMode({ mode, acceptRisk: true, markupPct? })`.
+- **N'activez jamais une option de vous-même**, et ne passez jamais `acceptRisk: true` sans cet accord.
+- **`local`** : le solde est tenu et reversé dans la monnaie du client. Il faut un numéro de reversement **confirmé** dans cette monnaie (`setPayoutDestination`, réservé à un administrateur), sinon le pays reste fermé (`no_payout_number`).
+- **`converted`** : le solde est changé plus tard en F CFA, au cours réel et moins le coût réel. L'écart est pour l'utilisateur. Cette option est refusée tant qu'aucune filière n'existe (`fx_channel_unavailable`).
+- **`markupPct`** (0 à 20) : supplément payé par le client, affiché, qui revient au marchand.
+- **Ne promettez jamais** un pays que `getFxMode()` ne donne pas `available: true`.
+- **Webhooks** :
+  - branchez `onFxModeUpdated` : un changement d'option que l'utilisateur n'a pas fait signale une clé compromise ;
+  - branchez `onBalanceConverted` en mode `converted`.
 
 ## Sécurité
 
@@ -121,7 +143,11 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | `invalid_amount`, `amount_too_low` | Montant entier positif, assez grand pour couvrir les frais |
 | `currency_not_enabled` | Devise non ouverte sur ce compte : contacter Technas |
 | `currency_conversion_unavailable` | Client hors zone CFA, mode de change `none` : ne pas proposer ce pays ; voir `getFxMode()` |
-| `refund_unavailable_fx` | Paiement converti : rembourser le client autrement, puis `recordExternalRefund` |
+| `country_not_allowed` | Le marchand ne vend pas dans ce pays : ne pas le proposer |
+| `country_not_available` | Pays pas prêt : `error.details.reason` dit quoi (`no_payout_number`…) |
+| `risk_not_accepted` | Montrer `error.details.risk` à l'utilisateur ; n'activer qu'avec son accord explicite |
+| `fx_channel_unavailable` | Mode `converted` impossible pour l'instant : proposer `local` ou rester en `none` |
+| `quote_expired` | Le client rechoisit son pays sur la page, rien à faire côté code |
 | `reference_conflict` | Même référence, autres valeurs : ne pas réutiliser la référence |
 | `payment_in_progress` | Réessayer dans une minute, même appel |
 | `payment_not_found`, `refund_not_found` | Mauvais identifiant ou autre compte |

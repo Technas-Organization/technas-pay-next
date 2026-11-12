@@ -70,24 +70,53 @@ La devise se choisit dans cet ordre :
 - **Hors zone franc CFA** (Ghana, Nigeria, Kenya…) : voir la section suivante.
 - `currencyForCountry("CM")` rend `"XAF"`, pour afficher le prix avec la bonne devise.
 
-### Clients hors zone franc CFA
+### Choisir où vous vendez
 
-Vous donnez toujours le montant en francs CFA. Ce qui se passe pour un client du Ghana, du Nigeria ou du Kenya dépend de votre **mode de change**. C'est Technas qui le règle avec vous ; `pay.getFxMode()` le lit.
+Tout est facultatif. Sans réglage, vos clients de toute la zone franc CFA peuvent payer.
 
-| Mode | Ce que paie le client | Ce que vous recevez |
-|---|---|---|
-| `none` (au départ) | Il ne peut pas payer : seuls les pays de la zone CFA sont proposés | — |
-| `local` | Votre montant converti au cours du jour, dans sa monnaie | Un solde dans sa monnaie (cedis…), reversé sur **votre numéro de reversement dans cette monnaie** |
-| `converted` | Votre montant au cours du jour, plus des frais de change | Des francs CFA. Pas encore disponible |
+| Vous voulez… | Faites |
+|---|---|
+| Que le client choisisse son pays | Rien : sans `currency` ni pays, la page le lui demande |
+| Fixer le pays vous-même | `customer: { country: "TG" }` |
+| Vendre seulement dans certains pays, pour tout votre compte | `pay.setCountryRules({ allowed: ["TG", "BJ"] })` |
+| Ne pas vendre dans certains pays | `pay.setCountryRules({ excluded: ["NG"] })` |
+| Restreindre un seul paiement | `allowedCountries: [...]` ou `excludedCountries: [...]` dans `askForPayment` |
+| Imposer la devise | `currency: "XAF"` : le paiement part directement dans cette devise |
+| Imposer la devise et laisser choisir le pays | `currency: "XAF", askCountry: true` : la page ne propose que les pays du XAF |
 
-- **Ce que voit le client** : avant de payer, la page lui montre le montant exact dans sa monnaie, le cours, les frais de change éventuels et la source du cours. Ce montant est garanti 30 minutes.
-- **Pays ouverts** : un pays n'apparaît que si tout est prêt. En mode `local`, il faut un numéro de reversement **confirmé** dans la monnaie de ce pays (`setPayoutDestination`), sinon votre argent n'aurait nulle part où aller. `pay.getFxMode()` liste les pays et dit ce qui manque à chacun (`reason`).
+Un pays refusé donne l'erreur `country_not_allowed`. Sur la page, il n'apparaît tout simplement pas.
+
+### Clients hors zone franc CFA : une option, à vos risques
+
+Vous donnez toujours le montant en francs CFA. Faire payer un client du Ghana, du Nigeria ou du Kenya est **une option que vous choisissez vous-même**. **Technas ne couvre aucun risque de change** et prend sa commission sur chaque paiement.
+
+| Option | Ce que paie le client | Ce que vous recevez | Votre risque |
+|---|---|---|---|
+| `none` (au départ) | — : seuls les pays de la zone CFA sont proposés | — | Aucun |
+| `local` | Votre montant au cours du jour, dans sa monnaie | Un solde dans sa monnaie (cedis…), reversé sur **votre numéro de reversement dans cette monnaie** | La valeur de ce solde suit le cours : si la monnaie baisse, vous perdez |
+| `converted` | Votre montant au cours du jour, dans sa monnaie | Un solde dans sa monnaie, puis **changé en francs CFA** par Technas, plus tard, au cours réellement obtenu et moins le coût réel du change | Tout l'écart entre le cours du paiement et le cours du change, plus le coût du change |
+
+```ts
+const fx = await pay.getFxMode();
+console.log(fx.risks.local); // le risque, en clair : lisez-le avant d'activer
+await pay.setFxMode({ mode: "local", acceptRisk: true, markupPct: 2 });
+```
+
+- **Accepter le risque** : sans `acceptRisk: true`, l'activation est refusée (`risk_not_accepted`) et l'erreur rend le texte du risque.
+- **Supplément de change** (`markupPct`, de 0 à 20 %, facultatif) : il est payé par le client, affiché avant qu'il paie, et vous revient. Il peut vous protéger d'une baisse du cours.
+- **Pays ouverts** : un pays n'apparaît que si tout est prêt. Sinon, `getFxMode()` dit ce qui manque (`reason`) :
+  - `no_payout_number` : en `local`, il faut un numéro de reversement **confirmé** dans la monnaie de ce pays ; en `converted`, un numéro en francs CFA. Sans lui, votre argent n'aurait nulle part où aller ;
+  - `no_fresh_rate` : pas de cours de moins de 24 h ;
+  - `no_operator` : pas d'opérateur ouvert dans ce pays ;
+  - `no_fx_channel` : personne ne sait encore changer cette monnaie. Le mode `converted` ne s'active pas tant qu'il n'existe aucune filière de change.
+- **Ce que voit le client** : avant de payer, la page lui montre le montant exact dans sa monnaie, le cours, votre supplément et la source du cours. Le montant est garanti 30 minutes.
 - **Dans le webhook** :
-  - `event.payment.amount` et `event.payment.currency` : ce que le client a payé (par exemple `121.96` `GHS`) ;
+  - `event.payment.amount` et `event.payment.currency` : ce que le client a payé (`121.96` `GHS`) ;
   - `event.payment.originalAmount` : votre montant en francs CFA ;
-  - `event.payment.fx` : le cours, les frais et la devise de votre solde.
+  - `event.payment.fx` : le cours, le supplément et la source.
+- **Mode `converted`** : chaque change vous est annoncé par `onBalanceConverted`, avec le cours réellement obtenu et le coût retiré.
+- **Sécurité** : chaque changement d'option vous est annoncé par `onFxModeUpdated`. Si ce n'est pas vous, prévenez Technas.
 - **Montants à centimes** : hors zone, un montant peut avoir des centimes (cedis…). Ne l'arrondissez pas.
-- **Sans mode de change**, un client hors zone avec `customer.country` reçoit l'erreur `currency_conversion_unavailable`. Avec `currency: "GHS"`, le montant est lu en cedis et non en francs CFA.
 
 ## 3. Recevoir la confirmation
 
@@ -238,7 +267,8 @@ En test (`tps_test_`), un remboursement est terminé aussitôt, avec des frais r
 | `pay.refund(paymentId, { amount?, fees?, reference? })` / `pay.getRefund(id)` | Rembourser au numéro qui a payé (voir plus haut) |
 | `pay.recordExternalRefund(paymentId, { amount, method, note?, recordedBy? })` | Enregistrer un remboursement fait hors Technas |
 | `pay.topUpBalance({ amount, currency })` | Recharger votre solde, sans commission |
-| `pay.getFxMode()` | Votre mode de change hors zone CFA, et les pays ouverts |
+| `pay.getFxMode()` / `pay.setFxMode({ mode, acceptRisk, markupPct? })` | Votre option hors zone CFA, ses risques, les pays ouverts |
+| `pay.setCountryRules({ allowed?, excluded? })` | Les pays où vous vendez |
 | `pay.getBalance()` | Votre solde : ce que Technas vous doit, par devise, après commission |
 | `pay.listTransactions({ limit, status, cursor })` | L'historique de vos paiements, par pages |
 | `pay.getSettlements()` | Vos reversements : `amount` quitte votre solde, `fee` (frais mobile money, à votre charge) en est déduit |
