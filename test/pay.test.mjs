@@ -258,3 +258,61 @@ test("une erreur détectée avant l'appel n'invite pas à réessayer", async () 
     (e) => e.code === "invalid_amount" && e.retryable === false,
   );
 });
+
+const REFUND = { id: "rf1", payment_id: "p1", payment_reference: "cmd_1", amount: 5000, sent_amount: 5000, fee: 210, fees: "partner", balance_debit: 5210, currency: "XOF", status: "pending", failure: null, created_at: "x" };
+
+test("refund : sans montant, frais au partenaire par défaut", async () => {
+  const seen = [];
+  const pay = createTechnasPay({ secret: SECRET, baseUrl: "https://gw.test", fetch: async (url, init) => (seen.push({ url, init }), Response.json(REFUND)) });
+  const r = await pay.refund("p1");
+  assert.equal(seen[0].url, "https://gw.test/v1/payments/p1/refunds");
+  assert.equal(seen[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(seen[0].init.body), { fees: "partner" });
+  assert.equal(r.balanceDebit, 5210);
+  assert.equal(r.sentAmount, 5000);
+  await pay.refund("p1", { amount: 2000, fees: "customer", reference: "geste-1" });
+  assert.deepEqual(JSON.parse(seen[1].init.body), { amount: 2000, fees: "customer", reference: "geste-1" });
+});
+
+test("refund : montant ou frais invalides refusés avant tout appel", async () => {
+  const pay = createTechnasPay({ secret: SECRET, fetch: () => assert.fail("aucun appel attendu") });
+  await assert.rejects(pay.refund("p1", { amount: 10.5 }), (e) => e.code === "invalid_amount");
+  await assert.rejects(pay.refund("p1", { fees: "technas" }), (e) => e.code === "invalid_request");
+});
+
+test("insufficient_balance dit ce qui manque", async () => {
+  const pay = createTechnasPay({
+    secret: SECRET,
+    fetch: async () => Response.json({ code: "insufficient_balance", message: "m", missing_amount: 310, currency: "XOF" }, { status: 409 }),
+  });
+  await assert.rejects(pay.refund("p1"), (e) =>
+    e.code === "insufficient_balance" && e.details.missingAmount === 310 && e.details.currency === "XOF" && e.retryable === false);
+});
+
+test("topUpBalance ouvre une recharge", async () => {
+  let seen;
+  const pay = createTechnasPay({
+    secret: SECRET, baseUrl: "https://gw.test",
+    fetch: async (url, init) => ((seen = { url, init }), Response.json({ id: "t1", amount: 1000, currency: "XOF", status: "pending", checkout_url: "https://c.test", test_mode: true, created_at: "x" })),
+  });
+  const t = await pay.topUpBalance({ amount: 1000, currency: "XOF" });
+  assert.equal(seen.url, "https://gw.test/v1/balance/top-ups");
+  assert.deepEqual(JSON.parse(seen.init.body), { amount: 1000, currency: "XOF" });
+  assert.equal(t.checkoutUrl, "https://c.test");
+});
+
+test("les webhooks refund.* et balance.topped_up arrivent dans onRefund et onTopUp", async () => {
+  const pay = createTechnasPay({ secret: SECRET });
+  const recus = [];
+  const handler = pay.webhookHandler({ onRefund: (e) => recus.push(e), onTopUp: (e) => recus.push(e), onCompleted: () => assert.fail() });
+  for (const [type, data] of [
+    ["refund.failed", { ...REFUND, status: "failed", failure: "invalid_msisdn" }],
+    ["balance.topped_up", { id: "t1", amount: 1000, currency: "XOF", completed_at: "y" }],
+  ]) {
+    const body = JSON.stringify({ id: `e-${type}`, type, created_at: "x", data });
+    assert.equal((await handler(request(body, sign(body)))).status, 200);
+  }
+  assert.equal(recus[0].refund.failure, "invalid_msisdn");
+  assert.equal(recus[0].refund.paymentReference, "cmd_1");
+  assert.equal(recus[1].topUp.amount, 1000);
+});

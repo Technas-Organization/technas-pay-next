@@ -18,6 +18,7 @@
     "src",
     "README.md",
     "AGENTS.md",
+    "llms.txt",
     "LICENSE"
   ],
   "sideEffects": [

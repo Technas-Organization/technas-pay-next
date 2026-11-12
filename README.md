@@ -2,7 +2,7 @@
 
 Encaissez des paiements via Technas depuis une application Next.js 13.4 ou plus récente.
 
-Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de lire [AGENTS.md](AGENTS.md).
+Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de lire [AGENTS.md](AGENTS.md), livré dans le paquet avec [llms.txt](llms.txt) (`node_modules/@technas/pay-next/AGENTS.md`).
 
 ## 1. Installer
 
@@ -88,6 +88,100 @@ export const POST = pay.webhookHandler({
 });
 ```
 
+## 4. Rembourser
+
+L'argent repart **au numéro qui a payé**, par mobile money. C'est **vous qui prévenez votre client** : Technas ne lui écrit pas.
+
+```ts
+const remboursement = await pay.refund(paymentId);                        // tout ce qui reste
+const partiel = await pay.refund(paymentId, { amount: 2000 });           // une partie
+const net = await pay.refund(paymentId, { amount: 2000, fees: "customer" }); // frais retirés au client
+```
+
+### Règles
+
+- **Paiement concerné** : seul un paiement `completed` de votre compte se rembourse.
+- **Plafond** : le total remboursé ne dépasse jamais le montant payé. Sans `amount`, vous remboursez tout ce qui reste.
+- **Commission** : la commission Technas (2 %) n'est pas rendue.
+- **Frais du renvoi**, choisis par `fees` à chaque appel :
+
+  | `fees` | Le client reçoit (`sentAmount`) | Votre solde perd (`balanceDebit`) |
+  |---|---|---|
+  | `"partner"` (défaut) | `amount` | `amount` + frais |
+  | `"customer"` | `amount` − frais | `amount` |
+
+- **Débit du solde** : votre solde est débité tout de suite. Si le renvoi échoue (`refund.failed`), il est recrédité.
+- **Idempotence** : rejouer le même appel ne rembourse pas deux fois. Pour deux remboursements partiels identiques et voulus, donnez à chacun une `reference`, par exemple l'identifiant de votre décision.
+- **Solde insuffisant** : l'appel échoue avec `insufficient_balance`, sans rien envoyer. `error.details.missingAmount` dit combien il manque. Rechargez avec `pay.topUpBalance({ amount, currency })` : c'est un paiement mobile money sans commission, confirmé par le webhook `balance.topped_up`. Ensuite, rappelez `refund`.
+
+### Exemple de back-office
+
+La décision → `pay.refund` → le résultat immédiat ou le webhook → le message au client.
+
+```ts
+// app/admin/remboursements/actions.ts — réservé aux administrateurs
+"use server";
+import { TechnasPayError } from "@technas/pay-next";
+import { pay } from "@/lib/pay";
+
+export async function rembourser(decisionId: string) {
+  const decision = await db.decision.findUniqueOrThrow({ where: { id: decisionId }, include: { commande: true } });
+  try {
+    const r = await pay.refund(decision.commande.technasPaymentId, {
+      amount: decision.montant,  // absent : tout ce qui reste
+      fees: decision.fraisAuClient ? "customer" : "partner",
+      reference: decision.id,    // rejouer cette décision ne rembourse pas deux fois
+    });
+    await db.decision.update({ where: { id: decisionId }, data: { refundId: r.id, statut: r.status } });
+    if (r.status === "completed") await prevenirClient(decision, r.sentAmount, r.currency);
+    // "pending" : le résultat arrive dans onRefund, ci-dessous.
+    return { ok: true, statut: r.status };
+  } catch (e) {
+    if (e instanceof TechnasPayError && e.code === "insufficient_balance") {
+      const recharge = await pay.topUpBalance({ amount: e.details.missingAmount!, currency: e.details.currency! });
+      return { ok: false, rechargerIci: recharge.checkoutUrl }; // payez, puis relancez la décision
+    }
+    if (e instanceof TechnasPayError && e.retryable) return { ok: false, reessayer: true };
+    throw e;
+  }
+}
+```
+
+```ts
+// app/api/technas-pay/route.ts
+export const POST = pay.webhookHandler({
+  onCompleted: async (event) => { /* … */ },
+  onRefund: async (event) => {
+    const decision = await db.decision.findUnique({ where: { refundId: event.refund.id } });
+    if (!decision || decision.statut === event.refund.status) return; // doublon
+    await db.decision.update({ where: { id: decision.id }, data: { statut: event.refund.status } });
+    if (event.type === "refund.completed") {
+      await prevenirClient(decision, event.refund.sentAmount, event.refund.currency);
+    } else {
+      await alerterAdministrateur(decision, event.refund.failure); // solde déjà recrédité
+    }
+  },
+  onTopUp: async (event) => {
+    await noterRecharge(event.topUp.amount, event.topUp.currency);
+  },
+});
+```
+
+Gardez `payment.id` (rendu par `askForPayment` et présent dans `event.payment.id`) sur votre commande : c'est lui que `refund` attend. À défaut, `pay.getPaymentByReference(reference)` le retrouve.
+
+### Erreurs propres au remboursement
+
+| `error.code` | Que faire |
+|---|---|
+| `payment_not_refundable` | Seul un paiement `completed` se rembourse |
+| `refund_exceeds_payment` | Rembourser au plus `error.details.refundableAmount` |
+| `refund_conflict` | Cette `reference` a déjà servi avec d'autres valeurs |
+| `insufficient_balance` | Recharger `error.details.missingAmount` avec `topUpBalance`, puis rappeler |
+| `payer_unknown` | Paiement encaissé avant l'arrivée des remboursements : rembourser autrement, prévenir Technas |
+| `refund_network_unavailable` | Le réseau du client ne reçoit plus de versement : rembourser autrement |
+
+En test (`tps_test_`), un remboursement est terminé aussitôt, avec des frais réalistes, et aucun argent ne part.
+
 ## À savoir
 
 - **Seul le webhook prouve le paiement.** Un visiteur peut ouvrir `returnUrl` à la main : n'y livrez rien.
@@ -103,6 +197,8 @@ export const POST = pay.webhookHandler({
 |---|---|
 | `pay.getPayment(id)` | État d'un paiement |
 | `pay.getPaymentByReference(reference)` | Rattraper un webhook manqué |
+| `pay.refund(paymentId, { amount?, fees?, reference? })` / `pay.getRefund(id)` | Rembourser au numéro qui a payé (voir plus haut) |
+| `pay.topUpBalance({ amount, currency })` | Recharger votre solde, sans commission |
 | `pay.getBalance()` | Votre solde : ce que Technas vous doit, par devise, après commission |
 | `pay.listTransactions({ limit, status, cursor })` | L'historique de vos paiements, par pages |
 | `pay.getSettlements()` | Vos reversements : `amount` quitte votre solde, `fee` (frais mobile money, à votre charge) en est déduit |

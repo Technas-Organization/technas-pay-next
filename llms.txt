@@ -1,0 +1,10 @@
+# @technas/pay-next
+
+> SDK Next.js (App Router, côté serveur) pour encaisser du mobile money en Afrique via Technas Pay, rembourser et recharger son solde. Montant seul : la devise (XOF ou XAF) suit le pays du client.
+
+Agents de code : lisez d'abord AGENTS.md, qui donne les règles courtes (méthodes, champs obligatoires, sécurité, webhooks, erreurs).
+
+- [AGENTS.md](AGENTS.md) : règles pour un agent de code, à appliquer dans l'application de l'utilisateur
+- [README.md](README.md) : guide complet, avec l'exemple de back-office de remboursement
+- [src/index.ts](src/index.ts) : types et commentaires de chaque fonction
+- [example/](example) : application Next.js d'exemple
