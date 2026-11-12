@@ -26,17 +26,26 @@ export interface AskForPaymentInput {
   description?: string;
   /** Rendues telles quelles dans le webhook. 4 Ko maximum. */
   metadata?: Record<string, unknown>;
+  /** Pour CE paiement : seuls ces pays (codes ISO), en plus des règles de votre compte. */
+  allowedCountries?: string[];
+  /** Pour CE paiement : ces pays sont refusés. */
+  excludedCountries?: string[];
+  /**
+   * Avec `currency` : le client choisit quand même son pays, parmi ceux de cette devise
+   * (ex. `currency: "XAF", askCountry: true` → Cameroun, Congo, Gabon…).
+   */
+  askCountry?: boolean;
 }
 
 /** Hors zone franc CFA : le change appliqué à un paiement. */
 export interface PaymentFx {
-  /** `local` : payé et crédité dans la devise du client. `converted` : crédité en F CFA. */
+  /** `local` ou `converted` : dans les deux cas, payé et crédité d'abord dans la devise du client. */
   mode: "local" | "converted";
   /** Unités de la devise payée pour 1 F CFA, avant marge. */
   rate: number;
   /** Le même cours, lisible : 1 unité de la devise payée = `francPerUnit` F CFA. */
   francPerUnit: number;
-  /** Frais de change ajoutés au prix du client (mode `converted`), en %. */
+  /** Votre supplément de change, payé par le client et qui vous revient, en %. */
   marginPct: number;
   /** D'où vient le cours ("Bank of Ghana"…). */
   source: string | null;
@@ -226,7 +235,14 @@ export interface OtherEvent {
   data: Record<string, unknown>;
 }
 
-export type TechnasPayEvent = PaymentEvent | PayoutDestinationEvent | RefundEvent | TopUpEvent | OtherEvent;
+export type TechnasPayEvent =
+  | PaymentEvent
+  | PayoutDestinationEvent
+  | RefundEvent
+  | TopUpEvent
+  | BalanceConvertedEvent
+  | FxModeEvent
+  | OtherEvent;
 
 export interface WebhookHandlers {
   onCompleted?: (event: PaymentEvent) => void | Promise<void>;
@@ -238,6 +254,10 @@ export interface WebhookHandlers {
   onRefund?: (event: RefundEvent) => void | Promise<void>;
   /** Recharge de solde payée. */
   onTopUp?: (event: TopUpEvent) => void | Promise<void>;
+  /** Mode `converted` : une partie de votre solde a été changée en F CFA, au cours et au coût réels. */
+  onBalanceConverted?: (event: BalanceConvertedEvent) => void | Promise<void>;
+  /** Votre option hors zone CFA a changé. Si ce n'est pas vous, prévenez Technas. */
+  onFxModeUpdated?: (event: FxModeEvent) => void | Promise<void>;
 }
 
 export interface TechnasPayOptions {
@@ -283,7 +303,15 @@ export class TechnasPayError extends Error {
      * (rechargez au moins ce montant avec `topUpBalance`), `refundableAmount` pour
      * `refund_exceeds_payment`.
      */
-    readonly details: { missingAmount?: number; currency?: string; refundableAmount?: number } = {},
+    readonly details: {
+      missingAmount?: number;
+      currency?: string;
+      refundableAmount?: number;
+      /** `country_not_available` : ce qui manque (`no_payout_number`…). */
+      reason?: string;
+      /** `risk_not_accepted` : le texte du risque à accepter. */
+      risk?: string;
+    } = {},
   ) {
     super(message);
     this.name = "TechnasPayError";
@@ -392,6 +420,21 @@ function parseEvent(raw: any): TechnasPayEvent {
   if (raw.type === "refund.completed" || raw.type === "refund.failed" || raw.type === "refund.recorded") {
     return { id: raw.id, type: raw.type, createdAt: raw.created_at, refund: parseRefund(d) };
   }
+  if (raw.type === "balance.converted") {
+    return {
+      id: raw.id, type: raw.type, createdAt: raw.created_at,
+      conversion: {
+        id: d.id, fromCurrency: d.from_currency, fromAmount: d.from_amount, toCurrency: d.to_currency,
+        grossAmount: d.gross_amount, cost: d.cost, creditedAmount: d.credited_amount, effectiveRate: d.effective_rate,
+      },
+    };
+  }
+  if (raw.type === "fx_mode.updated") {
+    return {
+      id: raw.id, type: raw.type, createdAt: raw.created_at,
+      fx: { mode: d.mode, previousMode: d.previous_mode, markupPct: d.markup_pct, homeCurrency: d.home_currency },
+    };
+  }
   if (raw.type === "balance.topped_up") {
     return {
       id: raw.id,
@@ -437,12 +480,24 @@ function parseFx(raw: any): PaymentFx | null {
   };
 }
 
-/** Votre mode de change hors zone CFA, et pays par pays ce qui est ouvert. */
+/** Votre option hors zone CFA, ses risques, vos règles de pays, et ce qui est ouvert. */
 export interface FxMode {
-  /** `none` : rien hors zone CFA. `local` ou `converted` : voir le README. Réglé par Technas. */
+  /** `none` : seuls les pays de la zone CFA. `local` ou `converted` : voir `risks`. */
   mode: "none" | "local" | "converted";
-  /** Devise de votre solde en mode `converted`. */
+  /** Devise de votre solde après change, en mode `converted`. */
   homeCurrency: string;
+  /** Votre supplément de change, payé par le client et qui vous revient, en %. */
+  markupPct: number;
+  /** Quand vous avez accepté le risque de votre option (`null` : jamais). */
+  riskAcceptedAt: string | null;
+  riskVersion: string;
+  /**
+   * Ce que vous acceptez, dit simplement, pour `none`, `local`, `converted` et `markup`.
+   * À lire (ou à faire lire par votre agent) avant `setFxMode`. Technas ne couvre aucun risque.
+   */
+  risks: Record<"none" | "local" | "converted" | "markup", string>;
+  /** Où vous vendez : `allowed` (`null` : tous) et `excluded`. */
+  countryRules: { allowed: string[] | null; excluded: string[] };
   countries: {
     country: string;
     name: string;
@@ -451,14 +506,67 @@ export interface FxMode {
     /**
      * Ce qui manque quand `available` est faux : `no_operator` (pas d'opérateur ouvert),
      * `no_fresh_rate` (pas de cours de moins de 24 h), `no_payout_number` (aucun numéro de
-     * reversement confirmé dans cette devise), `no_fx_channel`, `currency_not_enabled`.
+     * reversement confirmé dans la devise nécessaire), `no_fx_channel` (personne pour changer
+     * ce solde), `currency_not_enabled`.
      */
     reason: string | null;
     rate: number | null;
     rateSource: string | null;
     ratePublishedAt: string | null;
-    marginPct: number;
+    markupPct: number;
+    /** Mode `converted` : coût estimé du change, en %. Le coût RÉEL vous sera retiré. */
+    estimatedConversionCostPct: number | null;
   }[];
+}
+
+/** Un change fait pour vous en mode `converted`, au cours et au coût réels. */
+export interface BalanceConvertedEvent {
+  id: string;
+  type: "balance.converted";
+  createdAt: string;
+  conversion: {
+    id: string;
+    fromCurrency: string;
+    fromAmount: number;
+    toCurrency: string;
+    grossAmount: number;
+    cost: number;
+    creditedAmount: number;
+    /** F CFA crédités par unité changée, coût compris. */
+    effectiveRate: number;
+  };
+}
+
+export interface FxModeEvent {
+  id: string;
+  type: "fx_mode.updated";
+  createdAt: string;
+  /** Si ce n'est pas vous qui avez changé d'option, prévenez Technas : votre clé a peut-être fuité. */
+  fx: { mode: string; previousMode: string; markupPct: number; homeCurrency: string };
+}
+
+function parseFxMode(raw: any): FxMode {
+  return {
+    mode: raw.mode,
+    homeCurrency: raw.home_currency,
+    markupPct: raw.markup_pct ?? 0,
+    riskAcceptedAt: raw.risk_accepted_at ?? null,
+    riskVersion: raw.risk_version,
+    risks: raw.risks ?? {},
+    countryRules: { allowed: raw.country_rules?.allowed ?? null, excluded: raw.country_rules?.excluded ?? [] },
+    countries: (raw.countries ?? []).map((c: any) => ({
+      country: c.country,
+      name: c.name,
+      currency: c.currency,
+      available: Boolean(c.available),
+      reason: c.reason ?? null,
+      rate: c.rate ?? null,
+      rateSource: c.rate_source ?? null,
+      ratePublishedAt: c.rate_published_at ?? null,
+      markupPct: c.markup_pct ?? 0,
+      estimatedConversionCostPct: c.estimated_conversion_cost_pct ?? null,
+    })),
+  };
 }
 
 function parseRefund(raw: any): Refund {
@@ -538,6 +646,8 @@ export function createTechnasPay(options: TechnasPayOptions) {
           ...(data?.missing_amount !== undefined ? { missingAmount: data.missing_amount } : {}),
           ...(data?.currency !== undefined ? { currency: data.currency } : {}),
           ...(data?.refundable_amount !== undefined ? { refundableAmount: data.refundable_amount } : {}),
+          ...(data?.reason !== undefined ? { reason: data.reason } : {}),
+          ...(data?.risk !== undefined ? { risk: data.risk } : {}),
         },
       );
     }
@@ -580,6 +690,9 @@ export function createTechnasPay(options: TechnasPayOptions) {
         return_url: input.returnUrl,
         description: input.description,
         metadata: input.metadata ?? {},
+        ...(input.allowedCountries ? { allowed_countries: input.allowedCountries } : {}),
+        ...(input.excludedCountries ? { excluded_countries: input.excludedCountries } : {}),
+        ...(input.askCountry ? { ask_country: true } : {}),
       });
       return parsePayment(raw) as Payment & { checkoutUrl: string };
     },
@@ -688,24 +801,33 @@ export function createTechnasPay(options: TechnasPayOptions) {
       };
     },
 
-    /** Votre mode de change hors zone CFA, et les pays ouverts ou ce qui leur manque. */
+    /** Votre option hors zone CFA, ses risques en clair, vos règles de pays, les pays ouverts. */
     async getFxMode(): Promise<FxMode> {
-      const raw = await call<any>("GET", "/v1/fx");
-      return {
-        mode: raw.mode,
-        homeCurrency: raw.home_currency,
-        countries: (raw.countries ?? []).map((c: any) => ({
-          country: c.country,
-          name: c.name,
-          currency: c.currency,
-          available: Boolean(c.available),
-          reason: c.reason ?? null,
-          rate: c.rate ?? null,
-          rateSource: c.rate_source ?? null,
-          ratePublishedAt: c.rate_published_at ?? null,
-          marginPct: c.margin_pct ?? 0,
-        })),
-      };
+      return parseFxMode(await call<any>("GET", "/v1/fx"));
+    },
+
+    /**
+     * Choisit votre option hors zone CFA. Pour `local` ou `converted`, `acceptRisk: true` est
+     * obligatoire : lisez d'abord `(await getFxMode()).risks`. Technas ne couvre aucun risque.
+     * `markupPct` (0 à 20) : supplément de change payé par le client, qui vous revient.
+     */
+    async setFxMode(input: {
+      mode: "none" | "local" | "converted";
+      acceptRisk?: boolean;
+      markupPct?: number;
+      homeCurrency?: "XOF" | "XAF";
+    }): Promise<FxMode> {
+      return parseFxMode(await call<any>("PUT", "/v1/fx", {
+        mode: input.mode,
+        accept_risk: input.acceptRisk === true,
+        ...(input.markupPct !== undefined ? { markup_pct: input.markupPct } : {}),
+        ...(input.homeCurrency ? { home_currency: input.homeCurrency } : {}),
+      }));
+    },
+
+    /** Où vous vendez, pour tous vos paiements : pays autorisés (absent : tous) et exclus. Codes ISO. */
+    async setCountryRules(rules: { allowed?: string[] | null; excluded?: string[] }): Promise<{ allowed: string[] | null; excluded: string[] }> {
+      return call<any>("PUT", "/v1/country-rules", { allowed: rules.allowed ?? null, excluded: rules.excluded ?? [] });
     },
 
     /** Ce que Technas vous doit, par devise. */
@@ -819,6 +941,10 @@ export function createTechnasPay(options: TechnasPayOptions) {
           await handlers.onRefund?.(event as RefundEvent);
         } else if (event.type === "balance.topped_up") {
           await handlers.onTopUp?.(event as TopUpEvent);
+        } else if (event.type === "balance.converted") {
+          await handlers.onBalanceConverted?.(event as BalanceConvertedEvent);
+        } else if (event.type === "fx_mode.updated") {
+          await handlers.onFxModeUpdated?.(event as FxModeEvent);
         }
         // Un type inconnu est acquitté : il ne doit pas être relivré pendant trois jours.
         return Response.json({ received: true });
