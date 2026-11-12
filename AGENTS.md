@@ -10,14 +10,14 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.4.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.5.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
 
-   export const pay = createTechnasPay({ secret: process.env.TECHNAS_PAY_SECRET! });
+   export const pay = createTechnasPay({ secret: process.env.TECHNAS_PAY_SECRET!, defaultCurrency: "XOF" });
    ```
-3. Dans une Server Action, relisez la commande en base, appelez `pay.askForPayment({ amount, currency, reference, customer: { email, name }, returnUrl })`, puis `redirect(checkoutUrl)`.
+3. Dans une Server Action, relisez la commande en base, appelez `pay.askForPayment({ amount, reference, customer: { email, name, country }, returnUrl })`, puis `redirect(checkoutUrl)`. `currency` est facultative : sans elle, la devise vient du pays du client (`country`, ISO à deux lettres : TG → XOF, CM → XAF), puis de `defaultCurrency`. Ne fixez pas `defaultCurrency` au hasard : demandez à l'utilisateur la devise de ses clients s'il ne connaît pas leur pays.
 4. Créez `app/api/technas-pay/route.ts` et exportez `POST = pay.webhookHandler({ onCompleted, onFailed })`. Marquez la commande payée dans `onCompleted`, à partir de `event.payment.reference`.
 5. Ajoutez un test avec `pay.createTestWebhook`, puis lancez-le.
 
@@ -58,6 +58,7 @@ Avec un secret `tps_test_`, aucun argent ne circule.
 |---|---|---|
 | `invalid_secret` | Variable absente ou mal copiée | Demander à l'utilisateur de la vérifier |
 | `invalid_api_key` | Secret refusé | Contacter Technas |
+| `currency_required` | Ni `currency`, ni pays couvert, ni `defaultCurrency` | Passer le pays du client ou une devise |
 | `currency_not_enabled` | Devise non ouverte sur ce compte | Contacter Technas |
 | `amount_too_low` | Le montant ne couvre pas les frais | Augmenter le montant |
 | `reference_conflict` | Même référence, autre montant | Corriger, ne pas réutiliser la référence |

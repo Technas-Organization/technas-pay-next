@@ -7,9 +7,14 @@ export type PaymentStatus = "creating" | "pending" | "completed" | "failed" | "a
 export interface AskForPaymentInput {
   /** Montant entier en unité principale : 5000 = 5 000 FCFA. */
   amount: number;
-  currency: string;
+  /**
+   * Facultatif. Sans elle : la devise du pays du client (`customer.country`),
+   * sinon `defaultCurrency` du client Technas Pay, sinon une erreur `currency_required`.
+   */
+  currency?: string;
   /** Votre identifiant de commande. La même référence ne crée jamais deux paiements. */
   reference: string;
+  /** `country` : code ISO à deux lettres ("TG", "CM"…). Il fixe la devise quand `currency` est absente. */
   customer: { email: string; name: string; phone?: string; country?: string };
   /** Page de retour après un paiement réussi. Elle ne prouve pas le paiement : seul le webhook le prouve. */
   returnUrl: string;
@@ -147,13 +152,33 @@ export interface TechnasPayOptions {
   fetch?: typeof fetch;
   /** Âge maximal accepté pour un webhook, en secondes. 300 par défaut. */
   webhookToleranceSeconds?: number;
+  /** Devise d'un paiement sans `currency` dont le pays du client est absent ou inconnu : "XOF", "XAF"… */
+  defaultCurrency?: string;
+}
+
+/**
+ * Pays → devise encaissée, pour les pays où la passerelle Technas sait encaisser.
+ * UEMOA en XOF, CEMAC en XAF : deux zones, deux jeux d'opérateurs.
+ */
+export const CURRENCY_BY_COUNTRY: Readonly<Record<string, string>> = Object.freeze({
+  // UEMOA
+  BJ: "XOF", BF: "XOF", CI: "XOF", GW: "XOF", ML: "XOF", NE: "XOF", SN: "XOF", TG: "XOF",
+  // CEMAC
+  CM: "XAF", CF: "XAF", CG: "XAF", GA: "XAF", GQ: "XAF", TD: "XAF",
+  // Autres pays couverts
+  GH: "GHS", NG: "NGN", KE: "KES", GN: "GNF", CD: "CDF", RW: "RWF", UG: "UGX", TZ: "TZS", ZM: "ZMW", MW: "MWK",
+});
+
+/** La devise d'un pays (code ISO à deux lettres), ou `undefined` s'il n'est pas couvert. */
+export function currencyForCountry(country: string | undefined): string | undefined {
+  return country ? CURRENCY_BY_COUNTRY[country.trim().toUpperCase()] : undefined;
 }
 
 export class TechnasPayError extends Error {
   constructor(
     readonly code: string,
     message: string,
-    /** 0 quand le service n'a pas pu être joint. */
+    /** 0 quand le service n'a pas pu être joint, ou que l'erreur est détectée avant tout appel. */
     readonly status: number,
     readonly errors?: { field: string; message: string }[],
   ) {
@@ -163,7 +188,7 @@ export class TechnasPayError extends Error {
 
   /** Vrai si refaire le même appel, avec la même référence, a du sens. */
   get retryable(): boolean {
-    return this.status === 0 || this.status === 429 || this.status >= 500 || this.code === "payment_in_progress";
+    return this.code === "network_error" || this.status === 429 || this.status >= 500 || this.code === "payment_in_progress";
   }
 }
 
@@ -295,6 +320,24 @@ export function createTechnasPay(options: TechnasPayOptions) {
   const secrets = () => (parsed ??= parseSecret(options.secret));
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
   const tolerance = options.webhookToleranceSeconds ?? DEFAULT_TOLERANCE_S;
+  const defaultCurrency = options.defaultCurrency?.trim().toUpperCase() || undefined;
+
+  // Jamais de devise devinée : sans indice, on refuse avant tout appel.
+  function resolveCurrency(input: AskForPaymentInput): string {
+    const currency =
+      input.currency?.trim().toUpperCase() || currencyForCountry(input.customer?.country) || defaultCurrency;
+    if (!currency) {
+      const country = input.customer?.country;
+      throw new TechnasPayError(
+        "currency_required",
+        country
+          ? `Aucune devise connue pour le pays « ${country} ». Passez currency, ou defaultCurrency à createTechnasPay.`
+          : "Devise inconnue : passez currency, customer.country (ex. \"TG\") ou defaultCurrency à createTechnasPay.",
+        0,
+      );
+    }
+    return currency;
+  }
 
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const { apiKey } = secrets();
@@ -352,9 +395,10 @@ export function createTechnasPay(options: TechnasPayOptions) {
       if (!Number.isInteger(input.amount) || input.amount <= 0) {
         throw new TechnasPayError("invalid_amount", "amount doit être un entier positif (5000 = 5 000 FCFA)", 0);
       }
+      const currency = resolveCurrency(input);
       const raw = await call<any>("POST", "/v1/payments", {
         amount: input.amount,
-        currency: input.currency,
+        currency,
         reference: input.reference,
         customer: input.customer,
         return_url: input.returnUrl,
