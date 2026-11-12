@@ -110,7 +110,7 @@ const net = await pay.refund(paymentId, { amount: 2000, fees: "customer" }); // 
   | `"partner"` (défaut) | `amount` | `amount` + frais |
   | `"customer"` | `amount` − frais | `amount` |
 
-- **Débit du solde** : votre solde est débité tout de suite. Si le renvoi échoue (`refund.failed`), il est recrédité.
+- **Débit du solde** : votre solde est débité tout de suite. Si le renvoi échoue (`refund.failed`), il est recrédité, et vous pouvez refaire le même appel.
 - **Idempotence** : rejouer le même appel ne rembourse pas deux fois. Pour deux remboursements partiels identiques et voulus, donnez à chacun une `reference`, par exemple l'identifiant de votre décision.
 - **Solde insuffisant** : l'appel échoue avec `insufficient_balance`, sans rien envoyer. `error.details.missingAmount` dit combien il manque. Rechargez avec `pay.topUpBalance({ amount, currency })` : c'est un paiement mobile money sans commission, confirmé par le webhook `balance.topped_up`. Ensuite, rappelez `refund`.
 

@@ -80,7 +80,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 - **`onFailed` n'est pas définitif** : `onCompleted` peut arriver après.
 - **`onRefund`** : prévenez le client, par e-mail ou SMS. Technas ne lui écrit pas.
   - `refund.completed` : l'argent est arrivé, `sentAmount` sur son téléphone.
-  - `refund.failed` : rien n'est parti et votre solde est recrédité. Proposez un autre moyen, ou réessayez avec une nouvelle `reference`.
+  - `refund.failed` : rien n'est parti et votre solde est recrédité. Proposez un autre moyen, ou refaites le même appel `refund` : il est permis après un échec.
 
 ## Rembourser
 
