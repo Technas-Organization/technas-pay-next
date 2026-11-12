@@ -26,7 +26,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.6.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.7.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
