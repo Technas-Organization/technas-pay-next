@@ -7,7 +7,7 @@ Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de 
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.6.0
+npm install github:Technas-Organization/technas-pay-next#v0.7.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
