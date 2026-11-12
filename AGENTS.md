@@ -10,14 +10,14 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.5.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.6.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
 
-   export const pay = createTechnasPay({ secret: process.env.TECHNAS_PAY_SECRET!, defaultCurrency: "XOF" });
+   export const pay = createTechnasPay({ secret: process.env.TECHNAS_PAY_SECRET! });
    ```
-3. Dans une Server Action, relisez la commande en base, appelez `pay.askForPayment({ amount, reference, customer: { email, name, country }, returnUrl })`, puis `redirect(checkoutUrl)`. `currency` est facultative : sans elle, la devise vient du pays du client (`country`, ISO à deux lettres : TG → XOF, CM → XAF), puis de `defaultCurrency`. Ne fixez pas `defaultCurrency` au hasard : demandez à l'utilisateur la devise de ses clients s'il ne connaît pas leur pays.
+3. Dans une Server Action, relisez la commande en base, appelez `pay.askForPayment({ amount, reference, customer: { email, name, country }, returnUrl })`, puis `redirect(checkoutUrl)`. Ne passez pas `currency` si l'application vend en francs CFA : la devise suit le pays du client (`country`, ISO à deux lettres : TG → XOF, CM → XAF, même montant), et sans pays, le client le choisit sur la page de paiement. Passez `country` et `phone` si l'application les connaît. Ne fixez pas `defaultCurrency` : il empêcherait ce choix. Hors zone franc CFA, demandez la devise à l'utilisateur.
 4. Créez `app/api/technas-pay/route.ts` et exportez `POST = pay.webhookHandler({ onCompleted, onFailed })`. Marquez la commande payée dans `onCompleted`, à partir de `event.payment.reference`.
 5. Ajoutez un test avec `pay.createTestWebhook`, puis lancez-le.
 
@@ -27,6 +27,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 - **Seul le webhook prouve le paiement.** Ne marquez jamais une commande payée depuis la page `returnUrl`.
 - **Montant côté serveur.** Ne le lisez pas dans un formulaire ou une requête du navigateur.
 - **Montants entiers, en unité principale** : `5000` = 5 000 FCFA, jamais × 100.
+- **La devise payée fait foi** : lisez `event.payment.currency` dans le webhook. Un même montant peut arriver en XOF ou en XAF.
 - **`onCompleted` doit supporter d'être appelée plusieurs fois.** Le webhook est relivré tant que la réponse n'est pas 2xx. Vérifiez l'état de la commande ou gardez `event.id`.
 - **`onFailed` n'est pas définitif** : `onCompleted` peut arriver après.
 - **Ne rattrapez pas les erreurs de `onCompleted`** pour répondre 200 : une erreur doit remonter pour que le webhook soit relivré.
@@ -58,7 +59,7 @@ Avec un secret `tps_test_`, aucun argent ne circule.
 |---|---|---|
 | `invalid_secret` | Variable absente ou mal copiée | Demander à l'utilisateur de la vérifier |
 | `invalid_api_key` | Secret refusé | Contacter Technas |
-| `currency_required` | Ni `currency`, ni pays couvert, ni `defaultCurrency` | Passer le pays du client ou une devise |
+| `currency_conversion_unavailable` | Pays hors zone franc CFA, sans `currency` | Passer `currency`, ou ne pas passer le pays |
 | `currency_not_enabled` | Devise non ouverte sur ce compte | Contacter Technas |
 | `amount_too_low` | Le montant ne couvre pas les frais | Augmenter le montant |
 | `reference_conflict` | Même référence, autre montant | Corriger, ne pas réutiliser la référence |

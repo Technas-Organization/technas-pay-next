@@ -212,34 +212,42 @@ test("devise : sans currency, celle du pays du client (XOF à l'Ouest, XAF au Ce
   const { pay, sent } = payCapturingCurrency({ defaultCurrency: "GHS" });
   await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "TG" } });
   await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "cm" } });
-  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "KE" } });
-  assert.deepEqual(sent.map((b) => b.currency), ["XOF", "XAF", "KES"]);
+  assert.deepEqual(sent.map((b) => b.currency), ["XOF", "XAF"]);
   assert.equal(sent[1].customer.country, "cm");
 });
 
-test("devise : sinon defaultCurrency (pays absent ou non couvert)", async () => {
-  const { pay, sent } = payCapturingCurrency({ defaultCurrency: "xaf" });
-  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A" } });
-  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "FR" } });
-  assert.deepEqual(sent.map((b) => b.currency), ["XAF", "XAF"]);
+test("devise : hors zone CFA, jamais de devise locale déduite (le montant serait lu dans cette devise)", async () => {
+  const { pay, sent } = payCapturingCurrency({ defaultCurrency: "XOF" });
+  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "GH" } });
+  assert.equal("currency" in sent[0], false); // Technas répond currency_conversion_unavailable
 });
 
-test("devise : sinon une erreur claire, sans appel réseau et sans XOF deviné", async () => {
-  const pay = createTechnasPay({ secret: SECRET, fetch: () => assert.fail("aucun appel attendu") });
-  await assert.rejects(
-    pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A" } }),
-    (e) => e instanceof TechnasPayError && e.code === "currency_required" && e.status === 0 && !e.retryable,
-  );
-  await assert.rejects(
-    pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "FR" } }),
-    (e) => e.code === "currency_required" && e.message.includes("FR"),
-  );
+test("devise : sinon defaultCurrency quand le pays est inconnu", async () => {
+  const { pay, sent } = payCapturingCurrency({ defaultCurrency: "xaf" });
+  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A" } });
+  assert.deepEqual(sent.map((b) => b.currency), ["XAF"]);
+});
+
+test("devise : sinon le montant seul part, le payeur choisira son pays", async () => {
+  const sent = [];
+  const pay = createTechnasPay({
+    secret: SECRET,
+    fetch: async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      return Response.json({ ...PAYMENT_OK, currency: null, checkout_url: "https://pay-api.technas.fr/checkout/p1" });
+    },
+  });
+  const p = await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A" } });
+  assert.equal("currency" in sent[0], false);
+  assert.equal(p.currency, null);
+  assert.equal(p.checkoutUrl, "https://pay-api.technas.fr/checkout/p1");
 });
 
 test("currencyForCountry couvre l'UEMOA et la CEMAC", () => {
   for (const c of ["BJ", "BF", "CI", "GW", "ML", "NE", "SN", "TG"]) assert.equal(currencyForCountry(c), "XOF");
   for (const c of ["CM", "CF", "CG", "GA", "GQ", "TD"]) assert.equal(currencyForCountry(c), "XAF");
   assert.equal(currencyForCountry("FR"), undefined);
+  assert.equal(currencyForCountry("GH"), undefined);
   assert.equal(currencyForCountry(undefined), undefined);
 });
 
