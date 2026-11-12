@@ -133,6 +133,57 @@ export interface PayoutDestinationEvent {
   destination: PayoutDestinationView;
 }
 
+/** Qui paie les frais mobile money du renvoi d'un remboursement. */
+export type RefundFees = "partner" | "customer";
+
+export interface Refund {
+  id: string;
+  paymentId: string;
+  /** La `reference` de la commande remboursée. */
+  paymentReference: string;
+  /** Ce qui est décompté du paiement : jamais plus que le montant payé, au total. */
+  amount: number;
+  /** Ce qui arrive sur le téléphone du client : `amount`, moins `fee` si `fees` vaut `"customer"`. */
+  sentAmount: number;
+  /** Frais mobile money du renvoi. */
+  fee: number;
+  fees: RefundFees;
+  /** Ce qui a quitté votre solde : `amount + fee` (`"partner"`) ou `amount` (`"customer"`). */
+  balanceDebit: number;
+  currency: string;
+  /** `pending` : en route, le résultat arrive par webhook (`refund.completed` ou `refund.failed`). */
+  status: "pending" | "completed" | "failed";
+  /** Raison d'un échec. Le solde est alors recrédité de `balanceDebit`. */
+  failure: string | null;
+  createdAt: string;
+}
+
+export interface RefundEvent {
+  id: string;
+  type: "refund.completed" | "refund.failed";
+  createdAt: string;
+  refund: Refund;
+}
+
+export interface TopUp {
+  id: string;
+  amount: number;
+  currency: string;
+  status: PaymentStatus;
+  /** Ouvrez cette page pour payer la recharge par mobile money. */
+  checkoutUrl: string;
+  testMode: boolean;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface TopUpEvent {
+  id: string;
+  type: "balance.topped_up";
+  createdAt: string;
+  topUp: { id: string; amount: number; currency: string; completedAt: string | null };
+}
+
 /** Un type d'événement que cette version du package ne connaît pas encore. */
 export interface OtherEvent {
   id: string;
@@ -141,7 +192,7 @@ export interface OtherEvent {
   data: Record<string, unknown>;
 }
 
-export type TechnasPayEvent = PaymentEvent | PayoutDestinationEvent | OtherEvent;
+export type TechnasPayEvent = PaymentEvent | PayoutDestinationEvent | RefundEvent | TopUpEvent | OtherEvent;
 
 export interface WebhookHandlers {
   onCompleted?: (event: PaymentEvent) => void | Promise<void>;
@@ -149,6 +200,10 @@ export interface WebhookHandlers {
   onFailed?: (event: PaymentEvent) => void | Promise<void>;
   /** Changement de numéro de reversement demandé ou devenu actif. */
   onPayoutDestination?: (event: PayoutDestinationEvent) => void | Promise<void>;
+  /** Remboursement arrivé (`refund.completed`) ou échoué (`refund.failed`, solde recrédité). Prévenez votre client. */
+  onRefund?: (event: RefundEvent) => void | Promise<void>;
+  /** Recharge de solde payée. */
+  onTopUp?: (event: TopUpEvent) => void | Promise<void>;
 }
 
 export interface TechnasPayOptions {
@@ -189,6 +244,12 @@ export class TechnasPayError extends Error {
     /** 0 quand le service n'a pas pu être joint, ou que l'erreur est détectée avant tout appel. */
     readonly status: number,
     readonly errors?: { field: string; message: string }[],
+    /**
+     * Précisions selon le code : `missingAmount` et `currency` pour `insufficient_balance`
+     * (rechargez au moins ce montant avec `topUpBalance`), `refundableAmount` pour
+     * `refund_exceeds_payment`.
+     */
+    readonly details: { missingAmount?: number; currency?: string; refundableAmount?: number } = {},
   ) {
     super(message);
     this.name = "TechnasPayError";
@@ -290,6 +351,17 @@ function parseEvent(raw: any): TechnasPayEvent {
       destination: parseDestination(d),
     };
   }
+  if (raw.type === "refund.completed" || raw.type === "refund.failed") {
+    return { id: raw.id, type: raw.type, createdAt: raw.created_at, refund: parseRefund(d) };
+  }
+  if (raw.type === "balance.topped_up") {
+    return {
+      id: raw.id,
+      type: raw.type,
+      createdAt: raw.created_at,
+      topUp: { id: d.id, amount: d.amount, currency: d.currency, completedAt: d.completed_at ?? null },
+    };
+  }
   if (raw.type !== "payment.completed" && raw.type !== "payment.failed") {
     return { id: raw.id, type: raw.type, createdAt: raw.created_at, data: d };
   }
@@ -309,6 +381,23 @@ function parseEvent(raw: any): TechnasPayEvent {
       metadata: d.metadata ?? {},
       completedAt: d.completed_at ?? null,
     },
+  };
+}
+
+function parseRefund(raw: any): Refund {
+  return {
+    id: raw.id,
+    paymentId: raw.payment_id,
+    paymentReference: raw.payment_reference,
+    amount: raw.amount,
+    sentAmount: raw.sent_amount,
+    fee: raw.fee,
+    fees: raw.fees,
+    balanceDebit: raw.balance_debit,
+    currency: raw.currency,
+    status: raw.status,
+    failure: raw.failure ?? null,
+    createdAt: raw.created_at,
   };
 }
 
@@ -364,6 +453,11 @@ export function createTechnasPay(options: TechnasPayOptions) {
         data?.message ?? `Réponse HTTP ${response.status}`,
         response.status,
         data?.errors,
+        {
+          ...(data?.missing_amount !== undefined ? { missingAmount: data.missing_amount } : {}),
+          ...(data?.currency !== undefined ? { currency: data.currency } : {}),
+          ...(data?.refundable_amount !== undefined ? { refundableAmount: data.refundable_amount } : {}),
+        },
       );
     }
     return data as T;
@@ -429,6 +523,62 @@ export function createTechnasPay(options: TechnasPayOptions) {
       const suffix = query.size ? `?${query}` : "";
       const raw = await call<any>("GET", `/v1/transactions${suffix}`);
       return { items: raw.items.map(parsePayment), nextCursor: raw.next_cursor ?? null };
+    },
+
+    /**
+     * Rembourse un paiement `completed` : l'argent repart au numéro qui a payé.
+     * Sans `amount`, tout ce qui reste remboursable. Votre solde est débité tout de suite
+     * (`balanceDebit`) ; la commission Technas n'est pas rendue. `fees` : `"partner"`
+     * (défaut : le client reçoit tout, les frais s'ajoutent au débit) ou `"customer"`.
+     * Rejouer le même appel ne rembourse pas deux fois. Deux remboursements partiels
+     * identiques et voulus : donnez à chacun sa `reference`.
+     * C'est à vous de prévenir le client.
+     */
+    async refund(
+      paymentId: string,
+      options: { amount?: number; fees?: RefundFees; reference?: string } = {},
+    ): Promise<Refund> {
+      if (options.amount !== undefined && (!Number.isInteger(options.amount) || options.amount <= 0)) {
+        throw new TechnasPayError("invalid_amount", "amount doit être un entier positif (5000 = 5 000 FCFA)", 0);
+      }
+      if (options.fees !== undefined && options.fees !== "partner" && options.fees !== "customer") {
+        throw new TechnasPayError("invalid_request", 'fees vaut "partner" ou "customer"', 0);
+      }
+      const raw = await call<any>("POST", `/v1/payments/${encodeURIComponent(paymentId)}/refunds`, {
+        ...(options.amount !== undefined ? { amount: options.amount } : {}),
+        fees: options.fees ?? "partner",
+        ...(options.reference ? { reference: options.reference } : {}),
+      });
+      return parseRefund(raw);
+    },
+
+    async getRefund(refundId: string): Promise<Refund> {
+      return parseRefund(await call<any>("GET", `/v1/refunds/${encodeURIComponent(refundId)}`));
+    },
+
+    /**
+     * Recharge votre solde par mobile money, sans commission : ouvrez `checkoutUrl`.
+     * Le crédit arrive avec le webhook `balance.topped_up`.
+     */
+    async topUpBalance(input: { amount: number; currency: string; returnUrl?: string }): Promise<TopUp> {
+      if (!Number.isInteger(input.amount) || input.amount <= 0) {
+        throw new TechnasPayError("invalid_amount", "amount doit être un entier positif (5000 = 5 000 FCFA)", 0);
+      }
+      const raw = await call<any>("POST", "/v1/balance/top-ups", {
+        amount: input.amount,
+        currency: input.currency,
+        ...(input.returnUrl ? { return_url: input.returnUrl } : {}),
+      });
+      return {
+        id: raw.id,
+        amount: raw.amount,
+        currency: raw.currency,
+        status: raw.status,
+        checkoutUrl: raw.checkout_url,
+        testMode: Boolean(raw.test_mode),
+        createdAt: raw.created_at,
+        completedAt: raw.completed_at ?? null,
+      };
     },
 
     /** Ce que Technas vous doit, par devise. */
@@ -538,6 +688,10 @@ export function createTechnasPay(options: TechnasPayOptions) {
         else if (event.type === "payment.failed") await handlers.onFailed?.(event as PaymentEvent);
         else if (event.type.startsWith("payout_destination.")) {
           await handlers.onPayoutDestination?.(event as PayoutDestinationEvent);
+        } else if (event.type === "refund.completed" || event.type === "refund.failed") {
+          await handlers.onRefund?.(event as RefundEvent);
+        } else if (event.type === "balance.topped_up") {
+          await handlers.onTopUp?.(event as TopUpEvent);
         }
         // Un type inconnu est acquitté : il ne doit pas être relivré pendant trois jours.
         return Response.json({ received: true });

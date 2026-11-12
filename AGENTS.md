@@ -1,12 +1,27 @@
-# Intégrer @technas/pay-next dans une application Next.js
+# @technas/pay-next : règles pour un agent de code
 
-Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'application de l'utilisateur, pas dans ce dépôt. Le code complet d'un exemple est dans [`example/`](example).
+Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans l'application de l'utilisateur, pas dans ce dépôt. Le README détaille chaque fonction. Un exemple complet se trouve dans [`example/`](example).
 
 ## Avant de commencer
 
-1. Vérifiez que l'application utilise Next.js 13.4+ avec App Router. Sinon, utilisez `pay.verifyWebhook` (voir le README).
-2. Vérifiez que `TECHNAS_PAY_SECRET` existe dans l'environnement ou `.env.local`, et qu'il commence par `tps_test_`. S'il manque, demandez-le à l'utilisateur. **N'en inventez pas, ne l'affichez pas, ne le commitez pas.** Vérifiez que `.env.local` est ignoré par git.
-3. Repérez le modèle de commande existant : il faut une référence unique, un montant calculé côté serveur et un état « payée ».
+1. L'application doit utiliser Next.js 13.4+ avec App Router. Sinon, utilisez `pay.verifyWebhook` (voir le README).
+2. `TECHNAS_PAY_SECRET` doit exister dans l'environnement serveur ou dans `.env.local`, et commencer par `tps_test_`. S'il manque, demandez-le à l'utilisateur. **N'en inventez pas, ne l'affichez pas, ne le commitez pas.** Vérifiez que `.env.local` est ignoré par git.
+3. Repérez le modèle de commande : il faut une référence unique, un montant calculé côté serveur, un état « payée », et une colonne pour garder `payment.id` (nécessaire pour rembourser).
+
+## Quelle méthode pour quoi
+
+| Besoin | Appel |
+|---|---|
+| Faire payer une commande | `pay.askForPayment({ amount, reference, customer: { email, name }, returnUrl })`, puis `redirect(checkoutUrl)` |
+| Savoir qu'elle est payée | webhook `onCompleted`, dans `app/api/technas-pay/route.ts` |
+| Rattraper un webhook manqué | `pay.getPaymentByReference(reference)` |
+| Rembourser un client | `pay.refund(paymentId, { amount?, fees?, reference? })` |
+| Savoir que le remboursement est arrivé | webhook `onRefund` (`refund.completed` ou `refund.failed`) |
+| Recharger le solde pour rembourser | `pay.topUpBalance({ amount, currency })`, puis ouvrir `checkoutUrl` ; webhook `onTopUp` |
+| Afficher le solde | `pay.getBalance()` |
+| Afficher l'historique | `pay.listTransactions({ limit, status, cursor })` |
+| Reversements, numéro de reversement | `pay.getSettlements()`, `pay.getPayoutDestination()`, `pay.setPayoutDestination(...)` |
+| Tester la route webhook | `pay.createTestWebhook(type, paiement)` |
 
 ## Étapes
 
@@ -17,55 +32,99 @@ Consignes pour un assistant de code (Codex, Claude Code…). Suivez-les dans l'a
 
    export const pay = createTechnasPay({ secret: process.env.TECHNAS_PAY_SECRET! });
    ```
-3. Dans une Server Action, relisez la commande en base, appelez `pay.askForPayment({ amount, reference, customer: { email, name, country }, returnUrl })`, puis `redirect(checkoutUrl)`. Ne passez pas `currency` si l'application vend en francs CFA : la devise suit le pays du client (`country`, ISO à deux lettres : TG → XOF, CM → XAF, même montant), et sans pays, le client le choisit sur la page de paiement. Passez `country` et `phone` si l'application les connaît. Ne fixez pas `defaultCurrency` : il empêcherait ce choix. Hors zone franc CFA, demandez la devise à l'utilisateur.
-4. Créez `app/api/technas-pay/route.ts` et exportez `POST = pay.webhookHandler({ onCompleted, onFailed })`. Marquez la commande payée dans `onCompleted`, à partir de `event.payment.reference`.
+3. Dans une Server Action, relisez la commande en base, appelez `pay.askForPayment(...)`, gardez `payment.id` sur la commande, puis `redirect(checkoutUrl)`.
+4. Créez `app/api/technas-pay/route.ts` :
+   ```ts
+   export const POST = pay.webhookHandler({ onCompleted, onFailed, onRefund, onTopUp });
+   ```
+   Dans `onCompleted`, marquez la commande payée à partir de `event.payment.reference`.
 5. Ajoutez un test avec `pay.createTestWebhook`, puis lancez-le.
 
-## Règles à ne pas enfreindre
+## Obligatoire
 
-- **Côté serveur uniquement.** N'importez jamais `lib/pay.ts` dans un fichier `"use client"`. Pas de préfixe `NEXT_PUBLIC_` sur le secret.
-- **Seul le webhook prouve le paiement.** Ne marquez jamais une commande payée depuis la page `returnUrl`.
-- **Montant côté serveur.** Ne le lisez pas dans un formulaire ou une requête du navigateur.
-- **Montants entiers, en unité principale** : `5000` = 5 000 FCFA, jamais × 100.
+- **`amount`** : un entier en unité principale (`5000` = 5 000 FCFA, jamais × 100), calculé côté serveur.
+- **`reference`** : l'identifiant unique de la commande.
+- **`customer.email`** et **`customer.name`** : de vrais champs du client, jamais inventés.
+- **`returnUrl`** : la page de retour, en https en production.
+- Le reste est facultatif. Passez `customer.country` et `customer.phone` si l'application les connaît : ils évitent au client de choisir son pays.
+
+## La devise est automatique
+
+- **Ne passez pas `currency`** si l'application vend en francs CFA.
+  - La devise suit le pays du client : TG → XOF, CM → XAF, pour le même montant.
+  - Sans pays, le client choisit le sien sur la page de paiement.
+- **Ne fixez pas `defaultCurrency`** : il empêcherait ce choix.
+- **Hors zone franc CFA** (Ghana, Nigeria…), demandez la devise à l'utilisateur et passez `currency`.
 - **La devise payée fait foi** : lisez `event.payment.currency` dans le webhook. Un même montant peut arriver en XOF ou en XAF.
-- **`onCompleted` doit supporter d'être appelée plusieurs fois.** Le webhook est relivré tant que la réponse n'est pas 2xx. Vérifiez l'état de la commande ou gardez `event.id`.
-- **`onFailed` n'est pas définitif** : `onCompleted` peut arriver après.
-- **Ne rattrapez pas les erreurs de `onCompleted`** pour répondre 200 : une erreur doit remonter pour que le webhook soit relivré.
-- **Une référence = un paiement.** Réutilisez celle de la commande pour une reprise. Si `error.retryable` est vrai, refaites le même appel avec la même référence.
+
+## Sécurité
+
+- **Le secret reste côté serveur.**
+  - N'importez jamais `lib/pay.ts` dans un fichier `"use client"`.
+  - Pas de préfixe `NEXT_PUBLIC_`.
+  - Jamais de secret dans le code du navigateur, une page, un log ou un commit.
+- **Vérifiez la signature de chaque webhook avec le bon secret.**
+  - `webhookHandler` (ou `verifyWebhook`) le fait, avec le secret passé à `createTechnasPay`.
+  - Un secret `tps_test_` ne vérifie que les webhooks de test, un secret `tps_live_` que ceux du réel.
+  - Le serveur qui reçoit les webhooks réels doit avoir le secret `tps_live_`.
+  - Ne contournez jamais un refus de signature (réponse 400).
 - **Conservez le corps brut** : `webhookHandler` le lit lui-même. Ne le passez pas par `request.json()` avant.
+- **Seul le webhook prouve le paiement.** Ne marquez jamais une commande payée depuis la page `returnUrl`.
+- **Réservez à un administrateur** les remboursements et le numéro de reversement. Ne les exposez jamais sur une page publique.
 
-## Afficher le compte
+## Webhooks
 
-- `pay.getBalance()` : le solde, par devise, déjà net de la commission Technas.
-- `pay.listTransactions({ limit, status, cursor })` : l'historique, du plus récent au plus ancien. Passez `nextCursor` pour la page suivante. `status` : `pending`, `completed`, `failed`, `amount_mismatch`.
+- **Ils peuvent arriver plusieurs fois** : vos fonctions doivent le supporter. Vérifiez l'état en base, ou gardez `event.id`.
+- **Ne rattrapez pas leurs erreurs pour répondre 200.** Une erreur doit remonter pour que le webhook soit relivré.
+- **`onFailed` n'est pas définitif** : `onCompleted` peut arriver après.
+- **`onRefund`** : prévenez le client, par e-mail ou SMS. Technas ne lui écrit pas.
+  - `refund.completed` : l'argent est arrivé, `sentAmount` sur son téléphone.
+  - `refund.failed` : rien n'est parti et votre solde est recrédité. Proposez un autre moyen, ou réessayez avec une nouvelle `reference`.
 
-- `pay.getSettlements()` : les reversements ; chacun porte `fee`, les frais du versement déduits de `amount`.
-- `pay.getPayoutNetworks(country)`, `pay.getPayoutDestination()`, `pay.setPayoutDestination({ country, network, phone, beneficiaryName })` : le numéro de reversement, un par devise. `setPayoutDestination` répond 202 : rien ne change avant que le responsable du compte clique le lien reçu par e-mail. Ne dites jamais à l'utilisateur que le numéro est enregistré tant que `status` n'est pas `active`. Un changement devient actif 48 h après la confirmation, annoncé par un webhook reçu dans `onPayoutDestination`.
+## Rembourser
 
-Appelez-les côté serveur uniquement. Les reversements partent chaque semaine, à l'initiative de Technas : il n'y a pas de retrait à la demande. Ne proposez pas de modifier le numéro de reversement depuis une page publique : réservez-le à un administrateur du site.
+- **Appel** : `pay.refund(paymentId)` rembourse tout ce qui reste ; `pay.refund(paymentId, { amount })` rembourse une partie.
+- **Destination** : l'argent repart au numéro qui a payé, jamais à un autre.
+- **Plafond** : le total remboursé ne dépasse jamais le montant payé.
+- **Commission** : les 2 % ne sont pas rendus.
+- **Frais du renvoi**, choisis à chaque appel avec `fees` :
+  - `"partner"` (défaut) : le client reçoit tout, les frais sont pris en plus sur votre solde ;
+  - `"customer"` : les frais sont retirés de ce qu'il reçoit (`sentAmount`).
+- **Idempotence** : rejouer le même appel ne rembourse pas deux fois. Pour deux remboursements partiels identiques et voulus, donnez à chacun sa `reference`, par exemple l'identifiant de la décision.
+- **Statut** : la réponse peut être `pending`. Le résultat arrive dans `onRefund`, ou par `pay.getRefund(id)`.
+- **Solde insuffisant** : l'erreur `insufficient_balance` donne `error.details.missingAmount`. Rechargez avec `pay.topUpBalance`, puis rappelez `refund`.
+
+## Erreurs
+
+`error.code`, avec `error.retryable` (vrai : refaites **le même appel**, mêmes valeurs) et `error.details`.
+
+| `error.code` | Que faire |
+|---|---|
+| `invalid_secret` | Variable absente ou mal copiée : demandez à l'utilisateur de la vérifier |
+| `invalid_api_key` | Secret refusé : contacter Technas |
+| `invalid_request` | Corriger le champ indiqué dans `error.errors` |
+| `invalid_amount`, `amount_too_low` | Montant entier positif, assez grand pour couvrir les frais |
+| `currency_not_enabled` | Devise non ouverte sur ce compte : contacter Technas |
+| `currency_conversion_unavailable` | Pays hors zone franc CFA sans `currency` : demander la devise à l'utilisateur |
+| `reference_conflict` | Même référence, autres valeurs : ne pas réutiliser la référence |
+| `payment_in_progress` | Réessayer dans une minute, même appel |
+| `payment_not_found`, `refund_not_found` | Mauvais identifiant ou autre compte |
+| `payment_not_refundable` | Seul un paiement `completed` se rembourse |
+| `refund_exceeds_payment` | Rembourser au plus `error.details.refundableAmount` |
+| `refund_conflict` | Cette `reference` de remboursement a déjà servi avec d'autres valeurs |
+| `insufficient_balance` | Recharger au moins `error.details.missingAmount` avec `topUpBalance`, puis rappeler |
+| `payer_unknown`, `refund_network_unavailable` | Remboursement impossible par Technas : rembourser le client autrement, prévenir Technas |
+| `provider_unavailable`, `unavailable`, `network_error` | Panne passagère : refaire le même appel |
+| `rate_limited` | Ralentir, réessayer |
 
 ## Vérifier l'intégration
 
 Avec un secret `tps_test_`, aucun argent ne circule.
 
-1. Lancez l'application et déclenchez un paiement : `checkoutUrl` ouvre une page de test.
-2. Cliquez sur « Simuler un paiement réussi » : le client revient sur `returnUrl`.
-3. Contrôlez côté serveur avec `pay.getPaymentByReference(reference)` : `status` vaut `completed`, et `pay.getBalance()` a augmenté de `netAmount`.
-4. Le webhook n'arrive sur votre poste que si Technas connaît une adresse publique. Sinon, testez la route avec `pay.createTestWebhook`, et demandez à l'utilisateur de transmettre à son contact Technas l'adresse d'un tunnel pour l'essai complet.
-
-## Erreurs
-
-| `error.code` | Sens | Que faire |
-|---|---|---|
-| `invalid_secret` | Variable absente ou mal copiée | Demander à l'utilisateur de la vérifier |
-| `invalid_api_key` | Secret refusé | Contacter Technas |
-| `currency_conversion_unavailable` | Pays hors zone franc CFA, sans `currency` | Passer `currency`, ou ne pas passer le pays |
-| `currency_not_enabled` | Devise non ouverte sur ce compte | Contacter Technas |
-| `amount_too_low` | Le montant ne couvre pas les frais | Augmenter le montant |
-| `reference_conflict` | Même référence, autre montant | Corriger, ne pas réutiliser la référence |
-| `payment_in_progress` | Création en cours | Réessayer dans une minute |
-| `provider_unavailable`, `unavailable`, `network_error` | Panne passagère | Réessayer avec la même référence |
-| `invalid_request` | Champ invalide, détail dans `error.errors` | Corriger la demande |
+1. Lancez l'application et déclenchez un paiement : `checkoutUrl` ouvre une page de test (choix du pays, opérateurs, boutons « réussi » ou « refusé »).
+2. Cliquez sur « Simuler un paiement réussi », puis contrôlez côté serveur avec `pay.getPaymentByReference(reference)`.
+3. Remboursez avec `pay.refund(payment.id)` : en test, le remboursement est terminé aussitôt, avec des frais réalistes, et aucun argent ne part. Si le solde manque, `pay.topUpBalance` ouvre une page de test pour le recharger.
+4. Le webhook n'arrive sur votre poste que si Technas connaît une adresse publique. Sinon, testez la route avec `pay.createTestWebhook`, et demandez à l'utilisateur de transmettre à son contact Technas l'adresse d'un tunnel.
 
 ## Passer en réel
 
