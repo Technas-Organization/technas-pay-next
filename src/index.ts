@@ -34,6 +34,8 @@ export interface Payment {
   amount: number;
   /** `null` tant que le payeur n'a pas choisi son pays sur la page de paiement. */
   currency: string | null;
+  /** Déjà remboursé : par Technas (`refund`) ou enregistré (`recordExternalRefund`). */
+  refundedAmount: number;
   /** Part de Technas. */
   commission: number;
   /** Ce qui vous revient. */
@@ -155,12 +157,19 @@ export interface Refund {
   status: "pending" | "completed" | "failed";
   /** Raison d'un échec. Le solde est alors recrédité de `balanceDebit`. */
   failure: string | null;
+  /** `payout` : renvoyé par Technas. `external` : fait hors plateforme, seulement enregistré. */
+  kind: "payout" | "external";
+  /** Remboursement enregistré : le moyen utilisé ("Flooz", "Espèces"…), la note, qui l'a fait. */
+  method: string | null;
+  note: string | null;
+  recordedBy: string | null;
   createdAt: string;
 }
 
 export interface RefundEvent {
   id: string;
-  type: "refund.completed" | "refund.failed";
+  /** `refund.recorded` : un remboursement fait hors plateforme vient d'être enregistré. */
+  type: "refund.completed" | "refund.failed" | "refund.recorded";
   createdAt: string;
   refund: Refund;
 }
@@ -319,6 +328,7 @@ function parsePayment(raw: any): Payment {
     commission: raw.commission,
     netAmount: raw.net_amount,
     status: raw.status,
+    refundedAmount: raw.refunded_amount ?? 0,
     checkoutUrl: raw.checkout_url ?? null,
     metadata: raw.metadata ?? {},
     testMode: Boolean(raw.test_mode),
@@ -351,7 +361,7 @@ function parseEvent(raw: any): TechnasPayEvent {
       destination: parseDestination(d),
     };
   }
-  if (raw.type === "refund.completed" || raw.type === "refund.failed") {
+  if (raw.type === "refund.completed" || raw.type === "refund.failed" || raw.type === "refund.recorded") {
     return { id: raw.id, type: raw.type, createdAt: raw.created_at, refund: parseRefund(d) };
   }
   if (raw.type === "balance.topped_up") {
@@ -397,6 +407,10 @@ function parseRefund(raw: any): Refund {
     currency: raw.currency,
     status: raw.status,
     failure: raw.failure ?? null,
+    kind: raw.kind ?? "payout",
+    method: raw.method ?? null,
+    note: raw.note ?? null,
+    recordedBy: raw.recorded_by ?? null,
     createdAt: raw.created_at,
   };
 }
@@ -552,6 +566,32 @@ export function createTechnasPay(options: TechnasPayOptions) {
       return parseRefund(raw);
     },
 
+    /**
+     * Enregistre un remboursement que vous avez fait HORS Technas (Flooz, T-Money, espèces…).
+     * Aucun argent ne bouge, votre solde ne change pas. Il compte dans le plafond : avec
+     * les remboursements de `refund`, jamais plus que le montant payé. Rejouer le même
+     * appel n'enregistre pas deux fois.
+     */
+    async recordExternalRefund(
+      paymentId: string,
+      input: { amount: number; method: string; note?: string; recordedBy?: string; reference?: string },
+    ): Promise<Refund> {
+      if (!Number.isInteger(input.amount) || input.amount <= 0) {
+        throw new TechnasPayError("invalid_amount", "amount doit être un entier positif (5000 = 5 000 FCFA)", 0);
+      }
+      if (!input.method?.trim()) {
+        throw new TechnasPayError("invalid_request", 'method est obligatoire : "Flooz", "Espèces"…', 0);
+      }
+      const raw = await call<any>("POST", `/v1/payments/${encodeURIComponent(paymentId)}/external-refunds`, {
+        amount: input.amount,
+        method: input.method.trim(),
+        ...(input.note ? { note: input.note } : {}),
+        ...(input.recordedBy ? { recorded_by: input.recordedBy } : {}),
+        ...(input.reference ? { reference: input.reference } : {}),
+      });
+      return parseRefund(raw);
+    },
+
     async getRefund(refundId: string): Promise<Refund> {
       return parseRefund(await call<any>("GET", `/v1/refunds/${encodeURIComponent(refundId)}`));
     },
@@ -688,7 +728,7 @@ export function createTechnasPay(options: TechnasPayOptions) {
         else if (event.type === "payment.failed") await handlers.onFailed?.(event as PaymentEvent);
         else if (event.type.startsWith("payout_destination.")) {
           await handlers.onPayoutDestination?.(event as PayoutDestinationEvent);
-        } else if (event.type === "refund.completed" || event.type === "refund.failed") {
+        } else if (event.type.startsWith("refund.")) {
           await handlers.onRefund?.(event as RefundEvent);
         } else if (event.type === "balance.topped_up") {
           await handlers.onTopUp?.(event as TopUpEvent);

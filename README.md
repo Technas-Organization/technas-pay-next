@@ -114,6 +114,25 @@ const net = await pay.refund(paymentId, { amount: 2000, fees: "customer" }); // 
 - **Idempotence** : rejouer le même appel ne rembourse pas deux fois. Pour deux remboursements partiels identiques et voulus, donnez à chacun une `reference`, par exemple l'identifiant de votre décision.
 - **Solde insuffisant** : l'appel échoue avec `insufficient_balance`, sans rien envoyer. `error.details.missingAmount` dit combien il manque. Rechargez avec `pay.topUpBalance({ amount, currency })` : c'est un paiement mobile money sans commission, confirmé par le webhook `balance.topped_up`. Ensuite, rappelez `refund`.
 
+### Remboursement fait hors Technas
+
+Vous avez rendu l'argent vous-même, par Flooz, T-Money ou en espèces ? Enregistrez-le :
+
+```ts
+await pay.recordExternalRefund(paymentId, {
+  amount: 2000,
+  method: "Flooz",                  // obligatoire : "T-Money", "Espèces", "Virement"…
+  note: "Article abîmé, geste du SAV", // facultatif
+  recordedBy: "jacques@blexima.tg",    // facultatif : qui l'a fait
+});
+```
+
+- **Aucun mouvement** : aucun argent ne part, votre solde ne change pas.
+- **Plafond commun** : il compte dans le plafond. Avec les remboursements de `refund`, le total ne dépasse jamais le montant payé.
+- **Idempotence** : rejouer le même appel n'enregistre pas deux fois. Pour deux enregistrements identiques, donnez à chacun une `reference`.
+- **Webhook** : `refund.recorded`, reçu dans `onRefund`.
+- **Sur le paiement** : `payment.refundedAmount` additionne tout ce qui a été remboursé, par Technas ou hors Technas.
+
 ### Exemple de back-office
 
 La décision → `pay.refund` → le résultat immédiat ou le webhook → le message au client.
@@ -198,6 +217,7 @@ En test (`tps_test_`), un remboursement est terminé aussitôt, avec des frais r
 | `pay.getPayment(id)` | État d'un paiement |
 | `pay.getPaymentByReference(reference)` | Rattraper un webhook manqué |
 | `pay.refund(paymentId, { amount?, fees?, reference? })` / `pay.getRefund(id)` | Rembourser au numéro qui a payé (voir plus haut) |
+| `pay.recordExternalRefund(paymentId, { amount, method, note?, recordedBy? })` | Enregistrer un remboursement fait hors Technas |
 | `pay.topUpBalance({ amount, currency })` | Recharger votre solde, sans commission |
 | `pay.getBalance()` | Votre solde : ce que Technas vous doit, par devise, après commission |
 | `pay.listTransactions({ limit, status, cursor })` | L'historique de vos paiements, par pages |

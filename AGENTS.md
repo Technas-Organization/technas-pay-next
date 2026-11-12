@@ -16,7 +16,8 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | Savoir qu'elle est payée | webhook `onCompleted`, dans `app/api/technas-pay/route.ts` |
 | Rattraper un webhook manqué | `pay.getPaymentByReference(reference)` |
 | Rembourser un client | `pay.refund(paymentId, { amount?, fees?, reference? })` |
-| Savoir que le remboursement est arrivé | webhook `onRefund` (`refund.completed` ou `refund.failed`) |
+| Noter un remboursement fait hors Technas (Flooz, T-Money, espèces) | `pay.recordExternalRefund(paymentId, { amount, method, note?, recordedBy? })` |
+| Savoir que le remboursement est arrivé | webhook `onRefund` (`refund.completed`, `refund.failed` ou `refund.recorded`) |
 | Recharger le solde pour rembourser | `pay.topUpBalance({ amount, currency })`, puis ouvrir `checkoutUrl` ; webhook `onTopUp` |
 | Afficher le solde | `pay.getBalance()` |
 | Afficher l'historique | `pay.listTransactions({ limit, status, cursor })` |
@@ -93,6 +94,12 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 - **Idempotence** : rejouer le même appel ne rembourse pas deux fois. Pour deux remboursements partiels identiques et voulus, donnez à chacun sa `reference`, par exemple l'identifiant de la décision.
 - **Statut** : la réponse peut être `pending`. Le résultat arrive dans `onRefund`, ou par `pay.getRefund(id)`.
 - **Solde insuffisant** : l'erreur `insufficient_balance` donne `error.details.missingAmount`. Rechargez avec `pay.topUpBalance`, puis rappelez `refund`.
+- **Remboursement fait hors Technas** (Flooz, T-Money, espèces) : `pay.recordExternalRefund(paymentId, { amount, method })`.
+  - Aucun argent ne bouge, le solde ne change pas.
+  - Il compte dans le même plafond que `refund`.
+  - Même idempotence, webhook `refund.recorded`.
+  - N'appelez jamais `refund` pour un remboursement déjà fait à la main : le client serait remboursé deux fois.
+- **Total remboursé** : `payment.refundedAmount` additionne les deux sortes.
 
 ## Erreurs
 
