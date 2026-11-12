@@ -316,3 +316,24 @@ test("les webhooks refund.* et balance.topped_up arrivent dans onRefund et onTop
   assert.equal(recus[0].refund.paymentReference, "cmd_1");
   assert.equal(recus[1].topUp.amount, 1000);
 });
+
+test("recordExternalRefund enregistre sans argent, et arrive dans onRefund", async () => {
+  const seen = [];
+  const pay = createTechnasPay({
+    secret: SECRET, baseUrl: "https://gw.test",
+    fetch: async (url, init) => (seen.push({ url, init }), Response.json({ ...REFUND, kind: "external", status: "completed", fee: 0, balance_debit: 0, method: "Flooz", note: "geste", recorded_by: "jacques" })),
+  });
+  const r = await pay.recordExternalRefund("p1", { amount: 2000, method: " Flooz ", note: "geste", recordedBy: "jacques" });
+  assert.equal(seen[0].url, "https://gw.test/v1/payments/p1/external-refunds");
+  assert.deepEqual(JSON.parse(seen[0].init.body), { amount: 2000, method: "Flooz", note: "geste", recorded_by: "jacques" });
+  assert.equal(r.kind, "external");
+  assert.equal(r.recordedBy, "jacques");
+  await assert.rejects(pay.recordExternalRefund("p1", { amount: 2000, method: " " }), (e) => e.code === "invalid_request");
+
+  const recus = [];
+  const handler = createTechnasPay({ secret: SECRET }).webhookHandler({ onRefund: (e) => recus.push(e) });
+  const body = JSON.stringify({ id: "e9", type: "refund.recorded", created_at: "x", data: { ...REFUND, kind: "external", method: "Espèces" } });
+  assert.equal((await handler(request(body, sign(body)))).status, 200);
+  assert.equal(recus[0].type, "refund.recorded");
+  assert.equal(recus[0].refund.method, "Espèces");
+});
