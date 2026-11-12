@@ -337,3 +337,31 @@ test("recordExternalRefund enregistre sans argent, et arrive dans onRefund", asy
   assert.equal(recus[0].type, "refund.recorded");
   assert.equal(recus[0].refund.method, "Espèces");
 });
+
+test("getFxMode dit ce qui est ouvert hors zone CFA, et pourquoi pas", async () => {
+  const pay = createTechnasPay({
+    secret: SECRET, baseUrl: "https://gw.test",
+    fetch: async (url) => (assert.equal(url, "https://gw.test/v1/fx"), Response.json({
+      mode: "local", home_currency: "XOF",
+      countries: [{ country: "GH", name: "Ghana", currency: "GHS", available: false, reason: "no_payout_number", rate: null, rate_source: null, rate_published_at: null, margin_pct: 0 }],
+    })),
+  });
+  const fx = await pay.getFxMode();
+  assert.equal(fx.mode, "local");
+  assert.equal(fx.countries[0].reason, "no_payout_number");
+});
+
+test("un paiement hors zone porte le montant d'origine et le change", async () => {
+  const body = JSON.stringify({
+    id: "e-fx", type: "payment.completed", created_at: "x",
+    data: { id: "p", reference: "r", status: "completed", amount: 121.96, currency: "GHS", commission: 2.44, net_amount: 119.52, metadata: {},
+      original_amount: 5000, original_currency: "XOF",
+      fx: { mode: "local", rate: 0.024392, franc_per_unit: 40.9973, margin_pct: 0, source: "Bank of Ghana", credited_currency: "GHS" } },
+  });
+  let recu;
+  await createTechnasPay({ secret: SECRET }).webhookHandler({ onCompleted: (e) => (recu = e) })(request(body, sign(body)));
+  assert.equal(recu.payment.amount, 121.96);
+  assert.equal(recu.payment.originalAmount, 5000);
+  assert.equal(recu.payment.fx.francPerUnit, 40.9973);
+  assert.equal(recu.payment.fx.creditedCurrency, "GHS");
+});

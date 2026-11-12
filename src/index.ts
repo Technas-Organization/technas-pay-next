@@ -28,6 +28,22 @@ export interface AskForPaymentInput {
   metadata?: Record<string, unknown>;
 }
 
+/** Hors zone franc CFA : le change appliqué à un paiement. */
+export interface PaymentFx {
+  /** `local` : payé et crédité dans la devise du client. `converted` : crédité en F CFA. */
+  mode: "local" | "converted";
+  /** Unités de la devise payée pour 1 F CFA, avant marge. */
+  rate: number;
+  /** Le même cours, lisible : 1 unité de la devise payée = `francPerUnit` F CFA. */
+  francPerUnit: number;
+  /** Frais de change ajoutés au prix du client (mode `converted`), en %. */
+  marginPct: number;
+  /** D'où vient le cours ("Bank of Ghana"…). */
+  source: string | null;
+  /** La devise dans laquelle votre solde est crédité. */
+  creditedCurrency: string;
+}
+
 export interface Payment {
   id: string;
   reference: string;
@@ -36,6 +52,11 @@ export interface Payment {
   currency: string | null;
   /** Déjà remboursé : par Technas (`refund`) ou enregistré (`recordExternalRefund`). */
   refundedAmount: number;
+  /** Hors zone CFA : le montant que vous avez demandé, en F CFA. `null` sinon. */
+  originalAmount: number | null;
+  originalCurrency: string | null;
+  /** Hors zone CFA : le change appliqué. `null` sinon. */
+  fx: PaymentFx | null;
   /** Part de Technas. */
   commission: number;
   /** Ce qui vous revient. */
@@ -79,6 +100,10 @@ export interface PaymentEvent {
     netAmount: number;
     metadata: Record<string, unknown>;
     completedAt: string | null;
+    /** Hors zone CFA : le montant demandé en F CFA ; `amount` et `currency` sont ce qui a été payé. */
+    originalAmount: number | null;
+    originalCurrency: string | null;
+    fx: PaymentFx | null;
   };
 }
 
@@ -329,6 +354,9 @@ function parsePayment(raw: any): Payment {
     netAmount: raw.net_amount,
     status: raw.status,
     refundedAmount: raw.refunded_amount ?? 0,
+    originalAmount: raw.original_amount ?? null,
+    originalCurrency: raw.original_currency ?? null,
+    fx: parseFx(raw.fx),
     checkoutUrl: raw.checkout_url ?? null,
     metadata: raw.metadata ?? {},
     testMode: Boolean(raw.test_mode),
@@ -390,8 +418,47 @@ function parseEvent(raw: any): TechnasPayEvent {
       netAmount: d.net_amount,
       metadata: d.metadata ?? {},
       completedAt: d.completed_at ?? null,
+      originalAmount: d.original_amount ?? null,
+      originalCurrency: d.original_currency ?? null,
+      fx: parseFx(d.fx),
     },
   };
+}
+
+function parseFx(raw: any): PaymentFx | null {
+  if (!raw) return null;
+  return {
+    mode: raw.mode,
+    rate: raw.rate,
+    francPerUnit: raw.franc_per_unit,
+    marginPct: raw.margin_pct ?? 0,
+    source: raw.source ?? null,
+    creditedCurrency: raw.credited_currency,
+  };
+}
+
+/** Votre mode de change hors zone CFA, et pays par pays ce qui est ouvert. */
+export interface FxMode {
+  /** `none` : rien hors zone CFA. `local` ou `converted` : voir le README. Réglé par Technas. */
+  mode: "none" | "local" | "converted";
+  /** Devise de votre solde en mode `converted`. */
+  homeCurrency: string;
+  countries: {
+    country: string;
+    name: string;
+    currency: string;
+    available: boolean;
+    /**
+     * Ce qui manque quand `available` est faux : `no_operator` (pas d'opérateur ouvert),
+     * `no_fresh_rate` (pas de cours de moins de 24 h), `no_payout_number` (aucun numéro de
+     * reversement confirmé dans cette devise), `no_fx_channel`, `currency_not_enabled`.
+     */
+    reason: string | null;
+    rate: number | null;
+    rateSource: string | null;
+    ratePublishedAt: string | null;
+    marginPct: number;
+  }[];
 }
 
 function parseRefund(raw: any): Refund {
@@ -618,6 +685,26 @@ export function createTechnasPay(options: TechnasPayOptions) {
         testMode: Boolean(raw.test_mode),
         createdAt: raw.created_at,
         completedAt: raw.completed_at ?? null,
+      };
+    },
+
+    /** Votre mode de change hors zone CFA, et les pays ouverts ou ce qui leur manque. */
+    async getFxMode(): Promise<FxMode> {
+      const raw = await call<any>("GET", "/v1/fx");
+      return {
+        mode: raw.mode,
+        homeCurrency: raw.home_currency,
+        countries: (raw.countries ?? []).map((c: any) => ({
+          country: c.country,
+          name: c.name,
+          currency: c.currency,
+          available: Boolean(c.available),
+          reason: c.reason ?? null,
+          rate: c.rate ?? null,
+          rateSource: c.rate_source ?? null,
+          ratePublishedAt: c.rate_published_at ?? null,
+          marginPct: c.margin_pct ?? 0,
+        })),
       };
     },
 

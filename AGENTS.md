@@ -20,6 +20,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | Savoir que le remboursement est arrivé | webhook `onRefund` (`refund.completed`, `refund.failed` ou `refund.recorded`) |
 | Recharger le solde pour rembourser | `pay.topUpBalance({ amount, currency })`, puis ouvrir `checkoutUrl` ; webhook `onTopUp` |
 | Afficher le solde | `pay.getBalance()` |
+| Savoir quels pays hors zone CFA sont ouverts | `pay.getFxMode()` |
 | Afficher l'historique | `pay.listTransactions({ limit, status, cursor })` |
 | Reversements, numéro de reversement | `pay.getSettlements()`, `pay.getPayoutDestination()`, `pay.setPayoutDestination(...)` |
 | Tester la route webhook | `pay.createTestWebhook(type, paiement)` |
@@ -55,7 +56,14 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
   - La devise suit le pays du client : TG → XOF, CM → XAF, pour le même montant.
   - Sans pays, le client choisit le sien sur la page de paiement.
 - **Ne fixez pas `defaultCurrency`** : il empêcherait ce choix.
-- **Hors zone franc CFA** (Ghana, Nigeria…), demandez la devise à l'utilisateur et passez `currency`.
+- **Hors zone franc CFA** (Ghana, Nigeria…) : ne passez toujours pas `currency`, le montant reste en F CFA.
+  - Ce qui est possible dépend du mode de change du compte : `pay.getFxMode()`.
+  - Mode `none` : seuls les pays de la zone CFA sont proposés.
+  - Mode `local` : le client paie au cours du jour dans sa monnaie, et la page lui montre le montant avant de payer.
+  - Ne promettez jamais à l'utilisateur un pays que `getFxMode()` ne donne pas `available: true`.
+  - Si `reason` vaut `no_payout_number`, il manque un numéro de reversement confirmé dans cette devise : `setPayoutDestination`, réservé à un administrateur.
+- **Hors zone, les montants peuvent avoir des centimes** (`121.96` GHS) : stockez-les en décimal, ne les arrondissez pas.
+- Dans le webhook, `event.payment.originalAmount` est le montant demandé en F CFA ; `amount` et `currency` sont ce qui a été payé.
 - **La devise payée fait foi** : lisez `event.payment.currency` dans le webhook. Un même montant peut arriver en XOF ou en XAF.
 
 ## Sécurité
@@ -112,7 +120,8 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | `invalid_request` | Corriger le champ indiqué dans `error.errors` |
 | `invalid_amount`, `amount_too_low` | Montant entier positif, assez grand pour couvrir les frais |
 | `currency_not_enabled` | Devise non ouverte sur ce compte : contacter Technas |
-| `currency_conversion_unavailable` | Pays hors zone franc CFA sans `currency` : demander la devise à l'utilisateur |
+| `currency_conversion_unavailable` | Client hors zone CFA, mode de change `none` : ne pas proposer ce pays ; voir `getFxMode()` |
+| `refund_unavailable_fx` | Paiement converti : rembourser le client autrement, puis `recordExternalRefund` |
 | `reference_conflict` | Même référence, autres valeurs : ne pas réutiliser la référence |
 | `payment_in_progress` | Réessayer dans une minute, même appel |
 | `payment_not_found`, `refund_not_found` | Mauvais identifiant ou autre compte |
