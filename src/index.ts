@@ -8,13 +8,18 @@ export interface AskForPaymentInput {
   /** Montant entier en unité principale : 5000 = 5 000 FCFA. */
   amount: number;
   /**
-   * Facultatif. Sans elle : la devise du pays du client (`customer.country`),
-   * sinon `defaultCurrency` du client Technas Pay, sinon une erreur `currency_required`.
+   * Facultative. Sans elle : la devise du pays du client (`customer.country`, zone franc CFA),
+   * sinon `defaultCurrency`, sinon le payeur choisit son pays sur la page de paiement
+   * (XOF ou XAF, même montant : les deux francs CFA sont à parité fixe).
    */
   currency?: string;
   /** Votre identifiant de commande. La même référence ne crée jamais deux paiements. */
   reference: string;
-  /** `country` : code ISO à deux lettres ("TG", "CM"…). Il fixe la devise quand `currency` est absente. */
+  /**
+   * `country` : code ISO à deux lettres ("TG", "CM"…). Sans `currency`, il fixe la devise
+   * (zone franc CFA seulement) ; hors de cette zone, passez `currency`.
+   * `phone` au format international aide la page de paiement à proposer le bon pays.
+   */
   customer: { email: string; name: string; phone?: string; country?: string };
   /** Page de retour après un paiement réussi. Elle ne prouve pas le paiement : seul le webhook le prouve. */
   returnUrl: string;
@@ -27,7 +32,8 @@ export interface Payment {
   id: string;
   reference: string;
   amount: number;
-  currency: string;
+  /** `null` tant que le payeur n'a pas choisi son pays sur la page de paiement. */
+  currency: string | null;
   /** Part de Technas. */
   commission: number;
   /** Ce qui vous revient. */
@@ -152,24 +158,26 @@ export interface TechnasPayOptions {
   fetch?: typeof fetch;
   /** Âge maximal accepté pour un webhook, en secondes. 300 par défaut. */
   webhookToleranceSeconds?: number;
-  /** Devise d'un paiement sans `currency` dont le pays du client est absent ou inconnu : "XOF", "XAF"… */
+  /**
+   * Devise d'un paiement sans `currency` ni pays du client connu : "XOF", "XAF"…
+   * Inutile en zone franc CFA : sans elle, le payeur choisit son pays et la devise suit.
+   */
   defaultCurrency?: string;
 }
 
 /**
- * Pays → devise encaissée, pour les pays où la passerelle Technas sait encaisser.
- * UEMOA en XOF, CEMAC en XAF : deux zones, deux jeux d'opérateurs.
+ * Zone franc CFA : pays → devise. UEMOA en XOF, CEMAC en XAF, à parité fixe : un montant
+ * sans devise vaut la même chose dans les deux. Hors de cette zone, il faudrait convertir :
+ * passez `currency` vous-même.
  */
 export const CURRENCY_BY_COUNTRY: Readonly<Record<string, string>> = Object.freeze({
   // UEMOA
   BJ: "XOF", BF: "XOF", CI: "XOF", GW: "XOF", ML: "XOF", NE: "XOF", SN: "XOF", TG: "XOF",
   // CEMAC
   CM: "XAF", CF: "XAF", CG: "XAF", GA: "XAF", GQ: "XAF", TD: "XAF",
-  // Autres pays couverts
-  GH: "GHS", NG: "NGN", KE: "KES", GN: "GNF", CD: "CDF", RW: "RWF", UG: "UGX", TZ: "TZS", ZM: "ZMW", MW: "MWK",
 });
 
-/** La devise d'un pays (code ISO à deux lettres), ou `undefined` s'il n'est pas couvert. */
+/** La devise d'un pays de la zone franc CFA (code ISO à deux lettres), sinon `undefined`. */
 export function currencyForCountry(country: string | undefined): string | undefined {
   return country ? CURRENCY_BY_COUNTRY[country.trim().toUpperCase()] : undefined;
 }
@@ -322,21 +330,14 @@ export function createTechnasPay(options: TechnasPayOptions) {
   const tolerance = options.webhookToleranceSeconds ?? DEFAULT_TOLERANCE_S;
   const defaultCurrency = options.defaultCurrency?.trim().toUpperCase() || undefined;
 
-  // Jamais de devise devinée : sans indice, on refuse avant tout appel.
-  function resolveCurrency(input: AskForPaymentInput): string {
-    const currency =
-      input.currency?.trim().toUpperCase() || currencyForCountry(input.customer?.country) || defaultCurrency;
-    if (!currency) {
-      const country = input.customer?.country;
-      throw new TechnasPayError(
-        "currency_required",
-        country
-          ? `Aucune devise connue pour le pays « ${country} ». Passez currency, ou defaultCurrency à createTechnasPay.`
-          : "Devise inconnue : passez currency, customer.country (ex. \"TG\") ou defaultCurrency à createTechnasPay.",
-        0,
-      );
-    }
-    return currency;
+  // Jamais de devise devinée. Sans devise ni pays connu, Technas fait choisir son pays au payeur.
+  // Un pays hors zone franc CFA sans devise est refusé par Technas (`currency_conversion_unavailable`).
+  function resolveCurrency(input: AskForPaymentInput): string | undefined {
+    const explicit = input.currency?.trim().toUpperCase();
+    if (explicit) return explicit;
+    const country = input.customer?.country?.trim();
+    if (country) return currencyForCountry(country);
+    return defaultCurrency;
   }
 
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -398,7 +399,7 @@ export function createTechnasPay(options: TechnasPayOptions) {
       const currency = resolveCurrency(input);
       const raw = await call<any>("POST", "/v1/payments", {
         amount: input.amount,
-        currency,
+        ...(currency ? { currency } : {}),
         reference: input.reference,
         customer: input.customer,
         return_url: input.returnUrl,
