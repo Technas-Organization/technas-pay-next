@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
-import { createTechnasPay, TechnasPayError, WebhookVerificationError } from "../dist/index.js";
+import { createTechnasPay, currencyForCountry, TechnasPayError, WebhookVerificationError } from "../dist/index.js";
 
 const SECRET = "tps_test_pk_abc-DEF_123.ws_webhook-secret_456";
 const WEBHOOK_SECRET = "ws_webhook-secret_456";
@@ -183,4 +183,70 @@ test("getSettlements rend les frais du versement", async () => {
   const pay = createTechnasPay({ secret: SECRET, fetch: async () => Response.json([{ id: "s1", amount: 50000, fee: 1650, currency: "XOF", status: "completed", created_at: "x" }]) });
   const [r] = await pay.getSettlements();
   assert.equal(r.fee, 1650);
+});
+
+const PAYMENT_OK = { id: "p1", reference: "r", amount: 5000, currency: "XOF", commission: 100, net_amount: 4900, status: "pending", checkout_url: "https://c.test", metadata: {}, test_mode: true, created_at: "x" };
+
+function payCapturingCurrency(extra = {}) {
+  const sent = [];
+  const pay = createTechnasPay({
+    secret: SECRET,
+    ...extra,
+    fetch: async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      return Response.json(PAYMENT_OK);
+    },
+  });
+  return { pay, sent };
+}
+
+const ASK = { amount: 5000, reference: "r", returnUrl: "https://p.test" };
+
+test("devise : celle passée à l'appel gagne toujours", async () => {
+  const { pay, sent } = payCapturingCurrency({ defaultCurrency: "XAF" });
+  await pay.askForPayment({ ...ASK, currency: "GHS", customer: { email: "a@b.co", name: "A", country: "CM" } });
+  assert.equal(sent[0].currency, "GHS");
+});
+
+test("devise : sans currency, celle du pays du client (XOF à l'Ouest, XAF au Centre)", async () => {
+  const { pay, sent } = payCapturingCurrency({ defaultCurrency: "GHS" });
+  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "TG" } });
+  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "cm" } });
+  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "KE" } });
+  assert.deepEqual(sent.map((b) => b.currency), ["XOF", "XAF", "KES"]);
+  assert.equal(sent[1].customer.country, "cm");
+});
+
+test("devise : sinon defaultCurrency (pays absent ou non couvert)", async () => {
+  const { pay, sent } = payCapturingCurrency({ defaultCurrency: "xaf" });
+  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A" } });
+  await pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "FR" } });
+  assert.deepEqual(sent.map((b) => b.currency), ["XAF", "XAF"]);
+});
+
+test("devise : sinon une erreur claire, sans appel réseau et sans XOF deviné", async () => {
+  const pay = createTechnasPay({ secret: SECRET, fetch: () => assert.fail("aucun appel attendu") });
+  await assert.rejects(
+    pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A" } }),
+    (e) => e instanceof TechnasPayError && e.code === "currency_required" && e.status === 0 && !e.retryable,
+  );
+  await assert.rejects(
+    pay.askForPayment({ ...ASK, customer: { email: "a@b.co", name: "A", country: "FR" } }),
+    (e) => e.code === "currency_required" && e.message.includes("FR"),
+  );
+});
+
+test("currencyForCountry couvre l'UEMOA et la CEMAC", () => {
+  for (const c of ["BJ", "BF", "CI", "GW", "ML", "NE", "SN", "TG"]) assert.equal(currencyForCountry(c), "XOF");
+  for (const c of ["CM", "CF", "CG", "GA", "GQ", "TD"]) assert.equal(currencyForCountry(c), "XAF");
+  assert.equal(currencyForCountry("FR"), undefined);
+  assert.equal(currencyForCountry(undefined), undefined);
+});
+
+test("une erreur détectée avant l'appel n'invite pas à réessayer", async () => {
+  const pay = createTechnasPay({ secret: SECRET, fetch: () => assert.fail("aucun appel attendu") });
+  await assert.rejects(
+    pay.askForPayment({ amount: 1.5, currency: "XOF", reference: "r", customer: { email: "a@b.co", name: "A" }, returnUrl: "https://p.test" }),
+    (e) => e.code === "invalid_amount" && e.retryable === false,
+  );
 });

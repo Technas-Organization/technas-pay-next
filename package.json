@@ -1,6 +1,6 @@
 {
   "name": "@technas/pay-next",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Encaisser des paiements via Technas depuis une application Next.js.",
   "license": "MIT",
   "type": "module",

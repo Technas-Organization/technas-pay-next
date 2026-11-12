@@ -7,7 +7,7 @@ Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de 
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.4.0
+npm install github:Technas-Organization/technas-pay-next#v0.5.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -26,7 +26,10 @@ Un secret `tps_test_` ne déplace aucun argent : la page de paiement propose sim
 // lib/pay.ts
 import { createTechnasPay } from "@technas/pay-next";
 
-export const pay = createTechnasPay({ secret: process.env.TECHNAS_PAY_SECRET! });
+export const pay = createTechnasPay({
+  secret: process.env.TECHNAS_PAY_SECRET!,
+  defaultCurrency: "XOF", // facultatif : devise si le pays du client est inconnu
+});
 ```
 
 ```ts
@@ -38,9 +41,8 @@ import { pay } from "@/lib/pay";
 export async function payerCommande(commandeId: string) {
   const { checkoutUrl } = await pay.askForPayment({
     amount: 5000, // entier : 5 000 FCFA
-    currency: "XOF",
     reference: commandeId,
-    customer: { email: "client@exemple.com", name: "Awa Mensah" },
+    customer: { email: "client@exemple.com", name: "Awa Mensah", country: "TG" },
     returnUrl: "https://votre-site.com/merci",
   });
   redirect(checkoutUrl);
@@ -48,6 +50,23 @@ export async function payerCommande(commandeId: string) {
 ```
 
 Calculez le montant côté serveur, jamais à partir d'une valeur envoyée par le navigateur.
+
+### La devise
+
+Donnez seulement le montant : chaque client paie dans la monnaie de son pays. La devise se choisit dans cet ordre :
+
+1. `currency`, si vous la passez à l'appel ;
+2. sinon la devise du pays du client, `customer.country` (code ISO à deux lettres) ;
+3. sinon `defaultCurrency`, passé à `createTechnasPay` ;
+4. sinon l'appel échoue avec `currency_required`, avant de contacter Technas. Aucune devise n'est devinée.
+
+| Pays (`customer.country`) | Devise |
+|---|---|
+| Bénin `BJ`, Burkina Faso `BF`, Côte d'Ivoire `CI`, Guinée-Bissau `GW`, Mali `ML`, Niger `NE`, Sénégal `SN`, Togo `TG` | `XOF` |
+| Cameroun `CM`, Centrafrique `CF`, Congo `CG`, Gabon `GA`, Guinée équatoriale `GQ`, Tchad `TD` | `XAF` |
+| Ghana `GH` · Nigeria `NG` · Kenya `KE` · Guinée `GN` · RD Congo `CD` · Rwanda `RW` · Ouganda `UG` · Tanzanie `TZ` · Zambie `ZM` · Malawi `MW` | `GHS` · `NGN` · `KES` · `GNF` · `CDF` · `RWF` · `UGX` · `TZS` · `ZMW` · `MWK` |
+
+Le pays du client oriente aussi la page de paiement vers ses opérateurs : passez-le dès que vous le connaissez. `currencyForCountry("CM")` rend `"XAF"` si vous voulez afficher le prix dans la bonne devise. Une devise doit être ouverte sur votre compte, sinon `currency_not_enabled`.
 
 ## 3. Recevoir la confirmation
 
