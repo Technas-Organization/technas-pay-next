@@ -4,6 +4,8 @@
 
 Agents de code : lisez d'abord AGENTS.md, qui donne les règles courtes (méthodes, champs obligatoires, sécurité, webhooks, erreurs).
 
+Règle de relance : relancez avec une NOUVELLE référence seulement après payment.expired (ou getPayment → expired, `canRetry`), jamais sur failed : un refus n'est pas définitif, le client peut encore payer sur la même page pendant une heure.
+
 - [AGENTS.md](AGENTS.md) : règles pour un agent de code, à appliquer dans l'application de l'utilisateur
 - [README.md](README.md) : guide complet, avec l'exemple de back-office de remboursement
 - [src/index.ts](src/index.ts) : types et commentaires de chaque fonction

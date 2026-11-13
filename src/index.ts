@@ -2,7 +2,29 @@ const DEFAULT_BASE_URL = "https://pay-api.technas.fr";
 const SIGNATURE_HEADER = "x-technas-payment-signature";
 const DEFAULT_TOLERANCE_S = 300;
 
-export type PaymentStatus = "creating" | "pending" | "completed" | "failed" | "amount_mismatch";
+/**
+ * `failed` n'est PAS définitif : le payeur peut réessayer sur la même page tant que le lien vit
+ * (une heure), et le paiement passer ensuite en `completed`.
+ * `expired` est définitif : le lien est fermé, aucune transaction n'a réussi. Seulement alors,
+ * relancez le client avec une NOUVELLE référence (`canRetry`).
+ */
+export type PaymentStatus = "creating" | "pending" | "completed" | "failed" | "amount_mismatch" | "expired";
+
+/** Statuts qui ne changeront plus. `failed` n'en fait pas partie. */
+const FINAL_STATUSES: readonly PaymentStatus[] = ["completed", "amount_mismatch", "expired"];
+
+/** `true` si le statut ne changera plus : `completed`, `expired` ou `amount_mismatch`. Jamais pour `failed`. */
+export function isFinal(payment: { status: PaymentStatus | string }): boolean {
+  return (FINAL_STATUSES as readonly string[]).includes(payment.status);
+}
+
+/**
+ * `true` seulement pour `expired` : le lien est fermé et rien n'a été payé, vous pouvez relancer
+ * votre client avec une NOUVELLE référence. Jamais sur `failed` (le client peut encore payer).
+ */
+export function canRetry(payment: { status: PaymentStatus | string }): boolean {
+  return payment.status === "expired";
+}
 
 export interface AskForPaymentInput {
   /** Montant entier en unité principale : 5000 = 5 000 FCFA. */
@@ -46,6 +68,10 @@ export interface Payment {
   testMode: boolean;
   createdAt: string;
   completedAt: string | null;
+  /** Après cet instant, plus personne ne peut payer ce lien (une heure ; repoussée si la page du fournisseur s'ouvre tard). */
+  expiresAt: string | null;
+  /** Posé avec le statut `expired`. */
+  expiredAt: string | null;
 }
 
 export interface Balance {
@@ -67,7 +93,8 @@ export interface Settlement {
 export interface PaymentEvent {
   /** Stable d'un essai à l'autre : servez-vous-en pour ignorer un doublon. */
   id: string;
-  type: "payment.completed" | "payment.failed";
+  /** `payment.failed` n'est pas définitif ; `payment.expired` l'est (relancez avec une nouvelle référence). */
+  type: "payment.completed" | "payment.failed" | "payment.expired";
   createdAt: string;
   payment: {
     id: string;
@@ -79,6 +106,8 @@ export interface PaymentEvent {
     netAmount: number;
     metadata: Record<string, unknown>;
     completedAt: string | null;
+    expiresAt: string | null;
+    expiredAt: string | null;
   };
 }
 
@@ -205,8 +234,16 @@ export type TechnasPayEvent = PaymentEvent | PayoutDestinationEvent | RefundEven
 
 export interface WebhookHandlers {
   onCompleted?: (event: PaymentEvent) => void | Promise<void>;
-  /** Un refus n'est pas définitif : le client peut réessayer et `onCompleted` arriver ensuite. */
+  /**
+   * Un refus n'est PAS définitif : le client peut réessayer sur la même page et `onCompleted`
+   * arriver ensuite. N'annulez rien, ne relancez rien ici : attendez `onExpired`.
+   */
   onFailed?: (event: PaymentEvent) => void | Promise<void>;
+  /**
+   * Définitif : le lien a expiré et rien n'a été payé (vérifié chez l'opérateur par Technas).
+   * C'est le seul moment où relancer votre client, avec une NOUVELLE référence.
+   */
+  onExpired?: (event: PaymentEvent) => void | Promise<void>;
   /** Changement de numéro de reversement demandé ou devenu actif. */
   onPayoutDestination?: (event: PayoutDestinationEvent) => void | Promise<void>;
   /** Remboursement arrivé (`refund.completed`) ou échoué (`refund.failed`, solde recrédité). Prévenez votre client. */
@@ -334,6 +371,8 @@ function parsePayment(raw: any): Payment {
     testMode: Boolean(raw.test_mode),
     createdAt: raw.created_at,
     completedAt: raw.completed_at ?? null,
+    expiresAt: raw.expires_at ?? null,
+    expiredAt: raw.expired_at ?? null,
   };
 }
 
@@ -372,7 +411,7 @@ function parseEvent(raw: any): TechnasPayEvent {
       topUp: { id: d.id, amount: d.amount, currency: d.currency, completedAt: d.completed_at ?? null },
     };
   }
-  if (raw.type !== "payment.completed" && raw.type !== "payment.failed") {
+  if (raw.type !== "payment.completed" && raw.type !== "payment.failed" && raw.type !== "payment.expired") {
     return { id: raw.id, type: raw.type, createdAt: raw.created_at, data: d };
   }
   if (!d.id) throw new WebhookVerificationError("Webhook illisible");
@@ -390,6 +429,8 @@ function parseEvent(raw: any): TechnasPayEvent {
       netAmount: d.net_amount,
       metadata: d.metadata ?? {},
       completedAt: d.completed_at ?? null,
+      expiresAt: d.expires_at ?? null,
+      expiredAt: d.expired_at ?? null,
     },
   };
 }
@@ -682,6 +723,7 @@ export function createTechnasPay(options: TechnasPayOptions) {
       }
       const commission = payment.commission ?? 0;
       const completed = type === "payment.completed";
+      const expired = type === "payment.expired";
       const now = new Date().toISOString();
       const body = JSON.stringify({
         id: crypto.randomUUID(),
@@ -690,13 +732,15 @@ export function createTechnasPay(options: TechnasPayOptions) {
         data: {
           id: crypto.randomUUID(),
           reference: payment.reference,
-          status: completed ? "completed" : "failed",
+          status: completed ? "completed" : expired ? "expired" : "failed",
           amount: payment.amount,
           currency: payment.currency,
           commission,
           net_amount: payment.amount - commission,
           metadata: payment.metadata ?? {},
           completed_at: completed ? now : null,
+          expires_at: now,
+          expired_at: expired ? now : null,
         },
       });
       const timestamp = Math.floor(Date.now() / 1000);
@@ -712,6 +756,37 @@ export function createTechnasPay(options: TechnasPayOptions) {
      * Route Handler prêt à exporter : `export const POST = pay.webhookHandler({...})`.
      * Répond 2xx quand vos fonctions ont réussi. Sinon Technas relivre le même événement.
      */
+    /**
+     * Mode test seulement : fait ce que ferait le payeur sur la page de test, sans navigateur.
+     * `"completed"` (payé), `"failed"` (refusé, pas définitif) ou `"expired"` (lien fermé :
+     * définitif). Le vrai webhook signé part ensuite vers votre route, comme en réel.
+     * Rend le paiement tel que Technas le voit après coup.
+     */
+    async simulateTestPayment(paymentId: string, outcome: "completed" | "failed" | "expired"): Promise<Payment> {
+      if (secrets().mode !== "test") {
+        throw new TechnasPayError("test_only", "simulateTestPayment exige un secret tps_test_", 0);
+      }
+      if (!["completed", "failed", "expired"].includes(outcome)) {
+        throw new TechnasPayError("invalid_outcome", "outcome : completed, failed ou expired", 0);
+      }
+      const doFetch = options.fetch ?? fetch;
+      let response: Response;
+      try {
+        response = await doFetch(`${baseUrl}/test-checkout/${encodeURIComponent(paymentId)}/${outcome}`, {
+          method: "POST",
+          cache: "no-store",
+          // Un paiement réussi renvoie vers votre returnUrl : on ne la suit pas.
+          redirect: "manual",
+        });
+      } catch {
+        throw new TechnasPayError("network_error", "Service de paiement injoignable", 0);
+      }
+      if (response.status === 404) {
+        throw new TechnasPayError("payment_not_found", "Paiement de test introuvable", 404);
+      }
+      return this.getPayment(paymentId);
+    },
+
     webhookHandler(handlers: WebhookHandlers) {
       return async (request: Request): Promise<Response> => {
         const rawBody = await request.text();
@@ -726,6 +801,7 @@ export function createTechnasPay(options: TechnasPayOptions) {
         }
         if (event.type === "payment.completed") await handlers.onCompleted?.(event as PaymentEvent);
         else if (event.type === "payment.failed") await handlers.onFailed?.(event as PaymentEvent);
+        else if (event.type === "payment.expired") await handlers.onExpired?.(event as PaymentEvent);
         else if (event.type.startsWith("payout_destination.")) {
           await handlers.onPayoutDestination?.(event as PayoutDestinationEvent);
         } else if (event.type.startsWith("refund.")) {
