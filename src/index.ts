@@ -532,6 +532,11 @@ function parseFx(raw: any): PaymentFx | null {
 export interface FxMode {
   /** `none` : seuls les pays de la zone CFA. `local` ou `converted` : voir `risks`. */
   mode: "none" | "local" | "converted";
+  /**
+   * Les options que vous pouvez choisir aujourd'hui. `converted` n'y est pas tant que Technas
+   * n'a aucune filière de change : `setFxMode({ mode: "converted" })` lève alors `fx_mode_unavailable`.
+   */
+  availableModes: ("none" | "local" | "converted")[];
   /** Devise de votre solde après change, en mode `converted`. */
   homeCurrency: string;
   /** Votre supplément de change, payé par le client et qui vous revient, en %. */
@@ -553,7 +558,8 @@ export interface FxMode {
     available: boolean;
     /**
      * Ce qui manque quand `available` est faux : `no_operator` (pas d'opérateur ouvert),
-     * `no_fresh_rate` (pas de cours de moins de 24 h), `no_payout_number` (aucun numéro de
+     * `no_fresh_rate` (pas de cours frais : 24 h, 72 h s'il a été publié un vendredi ou le
+     * week-end ; ou les deux sources de cours diffèrent de plus de 2 %), `no_payout_number` (aucun numéro de
      * reversement confirmé dans la devise nécessaire), `no_fx_channel` (personne pour changer
      * ce solde), `currency_not_enabled`.
      */
@@ -596,6 +602,7 @@ export interface FxModeEvent {
 function parseFxMode(raw: any): FxMode {
   return {
     mode: raw.mode,
+    availableModes: raw.available_modes ?? ["none", "local"],
     homeCurrency: raw.home_currency,
     markupPct: raw.markup_pct ?? 0,
     riskAcceptedAt: raw.risk_accepted_at ?? null,
@@ -857,6 +864,8 @@ export function createTechnasPay(options: TechnasPayOptions) {
     /**
      * Choisit votre option hors zone CFA. Pour `local` ou `converted`, `acceptRisk: true` est
      * obligatoire : lisez d'abord `(await getFxMode()).risks`. Technas ne couvre aucun risque.
+     * Seules les options de `(await getFxMode()).availableModes` sont acceptées : aujourd'hui
+     * `none` et `local` ; `converted` lève `fx_mode_unavailable`.
      * `markupPct` (0 à 20) : supplément de change payé par le client, qui vous revient.
      */
     async setFxMode(input: {

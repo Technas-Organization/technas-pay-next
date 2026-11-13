@@ -31,7 +31,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.7.2`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.8.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -83,7 +83,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
   4. seulement ensuite, appelez `pay.setFxMode({ mode, acceptRisk: true, markupPct? })`.
 - **N'activez jamais une option de vous-même**, et ne passez jamais `acceptRisk: true` sans cet accord.
 - **`local`** : le solde est tenu et reversé dans la monnaie du client. Il faut un numéro de reversement **confirmé** dans cette monnaie (`setPayoutDestination`, réservé à un administrateur), sinon le pays reste fermé (`no_payout_number`).
-- **`converted`** : le solde est changé plus tard en F CFA, au cours réel et moins le coût réel. L'écart est pour l'utilisateur. Cette option est refusée tant qu'aucune filière n'existe (`fx_channel_unavailable`).
+- **`converted`** : PAS ENCORE OUVERT. `setFxMode({ mode: "converted" })` lève `fx_mode_unavailable` : ne le proposez pas. Seules les options de `(await pay.getFxMode()).availableModes` existent (aujourd'hui `none` et `local`).
 - **`markupPct`** (0 à 20) : supplément payé par le client, affiché, qui revient au marchand.
 - **Ne promettez jamais** un pays que `getFxMode()` ne donne pas `available: true`.
 - **Webhooks** :
@@ -162,7 +162,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | `country_not_allowed` | Le marchand ne vend pas dans ce pays : ne pas le proposer |
 | `country_not_available` | Pays pas prêt : `error.details.reason` dit quoi (`no_payout_number`…) |
 | `risk_not_accepted` | Montrer `error.details.risk` à l'utilisateur ; n'activer qu'avec son accord explicite |
-| `fx_channel_unavailable` | Mode `converted` impossible pour l'instant : proposer `local` ou rester en `none` |
+| `fx_mode_unavailable`, `fx_channel_unavailable` | Mode `converted` pas ouvert : proposer `local` (avec l'accord de l'utilisateur sur le risque) ou rester en `none` |
 | `quote_expired` | Le client rechoisit son pays sur la page, rien à faire côté code |
 | `reference_conflict` | Même référence, autres valeurs : ne pas réutiliser la référence |
 | `payment_in_progress` | Réessayer dans une minute, même appel |

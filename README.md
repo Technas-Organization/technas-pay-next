@@ -7,7 +7,7 @@ Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de 
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.7.2
+npm install github:Technas-Organization/technas-pay-next#v0.8.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -94,7 +94,7 @@ Vous donnez toujours le montant en francs CFA. Faire payer un client du Ghana, d
 |---|---|---|---|
 | `none` (au départ) | — : seuls les pays de la zone CFA sont proposés | — | Aucun |
 | `local` | Votre montant au cours du jour, dans sa monnaie | Un solde dans sa monnaie (cedis…), reversé sur **votre numéro de reversement dans cette monnaie** | La valeur de ce solde suit le cours : si la monnaie baisse, vous perdez |
-| `converted` | Votre montant au cours du jour, dans sa monnaie | Un solde dans sa monnaie, puis **changé en francs CFA** par Technas, plus tard, au cours réellement obtenu et moins le coût réel du change | Tout l'écart entre le cours du paiement et le cours du change, plus le coût du change |
+| `converted` (**pas encore ouvert**) | Votre montant au cours du jour, dans sa monnaie | Un solde dans sa monnaie, puis **changé en francs CFA** par Technas, plus tard, au cours réellement obtenu et moins le coût réel du change | Tout l'écart entre le cours du paiement et le cours du change, plus le coût du change |
 
 ```ts
 const fx = await pay.getFxMode();
@@ -102,11 +102,13 @@ console.log(fx.risks.local); // le risque, en clair : lisez-le avant d'activer
 await pay.setFxMode({ mode: "local", acceptRisk: true, markupPct: 2 });
 ```
 
+- **Options ouvertes aujourd'hui** : `none` et `local` (`fx.availableModes`). `converted` est refusé (`fx_mode_unavailable`) tant que Technas n'a aucune filière de change : rien n'est promis qui ne soit prêt.
+- **Le cours** : lu chaque jour sur ExchangeRate-API et vérifié contre une seconde source ; si elles diffèrent de plus de 2 %, la monnaie est fermée le temps de comprendre. Un cours vaut 24 h (72 h s'il a été publié un vendredi ou le week-end). Technas ne prend aucune marge de change.
 - **Accepter le risque** : sans `acceptRisk: true`, l'activation est refusée (`risk_not_accepted`) et l'erreur rend le texte du risque.
 - **Supplément de change** (`markupPct`, de 0 à 20 %, facultatif) : il est payé par le client, affiché avant qu'il paie, et vous revient. Il peut vous protéger d'une baisse du cours.
 - **Pays ouverts** : un pays n'apparaît que si tout est prêt. Sinon, `getFxMode()` dit ce qui manque (`reason`) :
   - `no_payout_number` : en `local`, il faut un numéro de reversement **confirmé** dans la monnaie de ce pays ; en `converted`, un numéro en francs CFA. Sans lui, votre argent n'aurait nulle part où aller ;
-  - `no_fresh_rate` : pas de cours de moins de 24 h ;
+  - `no_fresh_rate` : pas de cours frais (24 h, 72 h le week-end), ou les deux sources de cours ne concordent pas ;
   - `no_operator` : pas d'opérateur ouvert dans ce pays ;
   - `no_fx_channel` : personne ne sait encore changer cette monnaie. Le mode `converted` ne s'active pas tant qu'il n'existe aucune filière de change.
 - **Ce que voit le client** : avant de payer, la page lui montre le montant exact dans sa monnaie, le cours, votre supplément et la source du cours. Le montant est garanti 30 minutes.
