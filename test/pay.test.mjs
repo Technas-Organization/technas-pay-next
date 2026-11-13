@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
-import { createTechnasPay, currencyForCountry, TechnasPayError, WebhookVerificationError } from "../dist/index.js";
+import { canRetry, createTechnasPay, currencyForCountry, isFinal, TechnasPayError, WebhookVerificationError } from "../dist/index.js";
 
 const SECRET = "tps_test_pk_abc-DEF_123.ws_webhook-secret_456";
 const WEBHOOK_SECRET = "ws_webhook-secret_456";
@@ -336,4 +336,65 @@ test("recordExternalRefund enregistre sans argent, et arrive dans onRefund", asy
   assert.equal((await handler(request(body, sign(body)))).status, 200);
   assert.equal(recus[0].type, "refund.recorded");
   assert.equal(recus[0].refund.method, "Espèces");
+});
+
+test("expired : seul statut qui autorise une relance ; failed n'est pas définitif", () => {
+  assert.equal(canRetry({ status: "expired" }), true);
+  for (const status of ["failed", "pending", "completed", "amount_mismatch", "creating"]) {
+    assert.equal(canRetry({ status }), false, status);
+  }
+  assert.equal(isFinal({ status: "failed" }), false);
+  assert.equal(isFinal({ status: "pending" }), false);
+  for (const status of ["completed", "expired", "amount_mismatch"]) assert.equal(isFinal({ status }), true);
+});
+
+test("payment.expired arrive dans onExpired, avec expiredAt ; failed dans onFailed seulement", async () => {
+  const pay = createTechnasPay({ secret: SECRET });
+  const vus = [];
+  const handler = pay.webhookHandler({
+    onFailed: (e) => vus.push(["failed", e.payment.status]),
+    onExpired: (e) => vus.push(["expired", e.payment.status, e.payment.expiredAt, e.payment.reference]),
+  });
+  const body = JSON.stringify({
+    id: "evt_x", type: "payment.expired", created_at: "2026-11-13T14:00:00Z",
+    data: { id: "pay_x", reference: "BLX-1", status: "expired", amount: 300, currency: "XOF", commission: 6,
+            net_amount: 294, metadata: {}, completed_at: null, expires_at: "2026-11-13T13:57:14Z",
+            expired_at: "2026-11-13T14:00:00Z" },
+  });
+  assert.equal((await handler(request(body, sign(body)))).status, 200);
+  assert.deepEqual(vus, [["expired", "expired", "2026-11-13T14:00:00Z", "BLX-1"]]);
+  const test = await pay.createTestWebhook("payment.expired", { reference: "c2", amount: 1000, currency: "XOF" });
+  assert.equal((await handler(test)).status, 200);
+  assert.equal(vus[1][0], "expired");
+  assert.ok(vus[1][2]);
+});
+
+test("getPayment rend expiresAt et expiredAt", async () => {
+  const pay = createTechnasPay({
+    secret: SECRET,
+    fetch: async () => Response.json({ id: "p", reference: "r", amount: 300, currency: "XOF", commission: 6,
+      net_amount: 294, status: "expired", checkout_url: null, metadata: {}, test_mode: true,
+      created_at: "a", completed_at: null, expires_at: "b", expired_at: "c" }),
+  });
+  const p = await pay.getPayment("p");
+  assert.deepEqual([p.status, p.expiresAt, p.expiredAt, canRetry(p)], ["expired", "b", "c", true]);
+});
+
+test("simulateTestPayment : la page de test sans navigateur, refusé avec un secret réel", async () => {
+  const appels = [];
+  const pay = createTechnasPay({
+    secret: SECRET,
+    fetch: async (url, init) => {
+      appels.push([init.method, String(url), init.redirect]);
+      if (String(url).includes("/test-checkout/")) return new Response("ok", { status: 200 });
+      return Response.json({ id: "p1", reference: "r", amount: 1, currency: "XOF", commission: 0, net_amount: 1,
+        status: "expired", metadata: {}, test_mode: true, created_at: "a" });
+    },
+  });
+  const p = await pay.simulateTestPayment("p1", "expired");
+  assert.equal(p.status, "expired");
+  assert.deepEqual(appels[0], ["POST", "https://pay-api.technas.fr/test-checkout/p1/expired", "manual"]);
+  assert.equal(appels[1][1], "https://pay-api.technas.fr/v1/payments/p1");
+  const reel = createTechnasPay({ secret: "tps_live_pk_abc-DEF_123.ws_webhook-secret_456" });
+  await assert.rejects(reel.simulateTestPayment("p1", "expired"), (e) => e.code === "test_only");
 });
