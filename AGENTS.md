@@ -31,7 +31,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.7.1`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.7.2`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -107,7 +107,11 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 
 ## La règle de relance (à respecter strictement)
 
-**Relancez avec une NOUVELLE référence seulement après `payment.expired` (ou `getPayment` → `expired`), jamais sur `failed`.**
+**Une référence = un essai. Relancez avec une NOUVELLE référence seulement après `payment.expired` (ou `getPayment` → `expired`), jamais sur `failed`.**
+
+- Ne prenez pas l'identifiant de commande tel quel comme `reference` : composez `${orderId}-${tentative}` et gardez la tentative en base, pour pouvoir en créer une nouvelle.
+- Rejouer la référence d'un paiement expiré lève `payment_expired` (409) : ne réessayez pas le même appel, créez une nouvelle référence.
+- Après expiration, `checkoutUrl` vaut `null` : n'envoyez jamais l'ancien lien au client.
 
 - `failed` n'est **pas** définitif : le client peut encore payer sur la même page pendant une heure, et `onCompleted` arriver ensuite. Dans `onFailed`, ne marquez pas la commande annulée, n'envoyez pas de nouveau lien.
 - `expired` est définitif : le lien est fermé, Technas a vérifié chez l'opérateur que rien n'a été payé ni n'est en cours. `canRetry(payment)` vaut `true` seulement là.
@@ -163,7 +167,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | `reference_conflict` | Même référence, autres valeurs : ne pas réutiliser la référence |
 | `payment_in_progress` | Réessayer dans une minute, même appel |
 | `payment_not_found`, `refund_not_found` | Mauvais identifiant ou autre compte |
-| `payment_expired` | Lien fermé : relancer avec une nouvelle référence |
+| `payment_expired` | Cette référence est un essai expiré : nouveau paiement avec une NOUVELLE référence, jamais le même appel |
 | `payment_not_refundable` | Seul un paiement `completed` se rembourse |
 | `refund_exceeds_payment` | Rembourser au plus `error.details.refundableAmount` |
 | `refund_conflict` | Cette `reference` de remboursement a déjà servi avec d'autres valeurs |
