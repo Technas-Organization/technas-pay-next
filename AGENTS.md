@@ -15,6 +15,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | Faire payer une commande | `pay.askForPayment({ amount, reference, customer: { email, name }, returnUrl })`, puis `redirect(checkoutUrl)` |
 | Savoir qu'elle est payée | webhook `onCompleted`, dans `app/api/technas-pay/route.ts` |
 | Rattraper un webhook manqué | `pay.getPaymentByReference(reference)` |
+| Savoir si on peut relancer le client | webhook `onExpired` (`payment.expired`), ou `canRetry(await pay.getPayment(id))` |
 | Rembourser un client | `pay.refund(paymentId, { amount?, fees?, reference? })` |
 | Noter un remboursement fait hors Technas (Flooz, T-Money, espèces) | `pay.recordExternalRefund(paymentId, { amount, method, note?, recordedBy? })` |
 | Savoir que le remboursement est arrivé | webhook `onRefund` (`refund.completed`, `refund.failed` ou `refund.recorded`) |
@@ -26,10 +27,11 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | Afficher l'historique | `pay.listTransactions({ limit, status, cursor })` |
 | Reversements, numéro de reversement | `pay.getSettlements()`, `pay.getPayoutDestination()`, `pay.setPayoutDestination(...)` |
 | Tester la route webhook | `pay.createTestWebhook(type, paiement)` |
+| Jouer le payeur en test (réussi, refusé, expiré) | `pay.simulateTestPayment(id, "completed" \| "failed" \| "expired")` |
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.7.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.7.1`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -39,7 +41,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 3. Dans une Server Action, relisez la commande en base, appelez `pay.askForPayment(...)`, gardez `payment.id` sur la commande, puis `redirect(checkoutUrl)`.
 4. Créez `app/api/technas-pay/route.ts` :
    ```ts
-   export const POST = pay.webhookHandler({ onCompleted, onFailed, onRefund, onTopUp });
+   export const POST = pay.webhookHandler({ onCompleted, onFailed, onExpired, onRefund, onTopUp });
    ```
    Dans `onCompleted`, marquez la commande payée à partir de `event.payment.reference`.
 5. Ajoutez un test avec `pay.createTestWebhook`, puis lancez-le.
@@ -103,11 +105,21 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 - **Seul le webhook prouve le paiement.** Ne marquez jamais une commande payée depuis la page `returnUrl`.
 - **Réservez à un administrateur** les remboursements et le numéro de reversement. Ne les exposez jamais sur une page publique.
 
+## La règle de relance (à respecter strictement)
+
+**Relancez avec une NOUVELLE référence seulement après `payment.expired` (ou `getPayment` → `expired`), jamais sur `failed`.**
+
+- `failed` n'est **pas** définitif : le client peut encore payer sur la même page pendant une heure, et `onCompleted` arriver ensuite. Dans `onFailed`, ne marquez pas la commande annulée, n'envoyez pas de nouveau lien.
+- `expired` est définitif : le lien est fermé, Technas a vérifié chez l'opérateur que rien n'a été payé ni n'est en cours. `canRetry(payment)` vaut `true` seulement là.
+- La même référence rend le même paiement expiré : générez-en une nouvelle (ex. `${orderId}-2`) et gardez le nouveau `payment.id`.
+- Expliquez cette règle à l'utilisateur : un client relancé sur `failed` pourrait payer deux fois.
+
 ## Webhooks
 
 - **Ils peuvent arriver plusieurs fois** : vos fonctions doivent le supporter. Vérifiez l'état en base, ou gardez `event.id`.
 - **Ne rattrapez pas leurs erreurs pour répondre 200.** Une erreur doit remonter pour que le webhook soit relivré.
 - **`onFailed` n'est pas définitif** : `onCompleted` peut arriver après.
+- **`onExpired` est définitif** : seul moment où relancer le client (nouvelle référence).
 - **`onRefund`** : prévenez le client, par e-mail ou SMS. Technas ne lui écrit pas.
   - `refund.completed` : l'argent est arrivé, `sentAmount` sur son téléphone.
   - `refund.failed` : rien n'est parti et votre solde est recrédité. Proposez un autre moyen, ou refaites le même appel `refund` : il est permis après un échec.
@@ -151,6 +163,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | `reference_conflict` | Même référence, autres valeurs : ne pas réutiliser la référence |
 | `payment_in_progress` | Réessayer dans une minute, même appel |
 | `payment_not_found`, `refund_not_found` | Mauvais identifiant ou autre compte |
+| `payment_expired` | Lien fermé : relancer avec une nouvelle référence |
 | `payment_not_refundable` | Seul un paiement `completed` se rembourse |
 | `refund_exceeds_payment` | Rembourser au plus `error.details.refundableAmount` |
 | `refund_conflict` | Cette `reference` de remboursement a déjà servi avec d'autres valeurs |
@@ -165,6 +178,7 @@ Avec un secret `tps_test_`, aucun argent ne circule.
 
 1. Lancez l'application et déclenchez un paiement : `checkoutUrl` ouvre une page de test (choix du pays, opérateurs, boutons « réussi » ou « refusé »).
 2. Cliquez sur « Simuler un paiement réussi », puis contrôlez côté serveur avec `pay.getPaymentByReference(reference)`.
+   Testez aussi la relance : sur un autre paiement, « Simuler un refus » (rien ne doit être relancé), puis « Simuler l'expiration du lien » (`onExpired` doit relancer avec une nouvelle référence). Sans navigateur : `pay.simulateTestPayment(id, "failed")` puis `"expired"`. Un paiement de test non payé expire aussi tout seul au bout d'une heure.
 3. Remboursez avec `pay.refund(payment.id)` : en test, le remboursement est terminé aussitôt, avec des frais réalistes, et aucun argent ne part. Si le solde manque, `pay.topUpBalance` ouvre une page de test pour le recharger.
 4. Le webhook n'arrive sur votre poste que si Technas connaît une adresse publique. Sinon, testez la route avec `pay.createTestWebhook`, et demandez à l'utilisateur de transmettre à son contact Technas l'adresse d'un tunnel.
 
