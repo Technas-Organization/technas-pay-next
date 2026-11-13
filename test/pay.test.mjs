@@ -473,3 +473,14 @@ test("simulateTestPayment : la page de test sans navigateur, refusé avec un sec
   const reel = createTechnasPay({ secret: "tps_live_pk_abc-DEF_123.ws_webhook-secret_456" });
   await assert.rejects(reel.simulateTestPayment("p1", "expired"), (e) => e.code === "test_only");
 });
+
+test("rejouer une référence expirée : payment_expired, pas de nouvel essai conseillé", async () => {
+  const pay = createTechnasPay({
+    secret: SECRET,
+    fetch: async () => Response.json({ code: "payment_expired", message: "create a new payment with a NEW reference" }, { status: 409 }),
+  });
+  await assert.rejects(
+    pay.askForPayment({ amount: 300, reference: "BLX-1", customer: { email: "a@b.co", name: "A" }, returnUrl: "https://p.example" }),
+    (e) => e instanceof TechnasPayError && e.code === "payment_expired" && e.status === 409 && e.retryable === false,
+  );
+});
