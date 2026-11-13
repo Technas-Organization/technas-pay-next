@@ -35,7 +35,12 @@ export interface AskForPaymentInput {
    * (XOF ou XAF, même montant : les deux francs CFA sont à parité fixe).
    */
   currency?: string;
-  /** Votre identifiant de commande. La même référence ne crée jamais deux paiements. */
+  /**
+   * UNE RÉFÉRENCE = UN ESSAI. La même référence ne crée jamais deux paiements : la rejouer rend le
+   * même essai (utile après une coupure réseau). Pour un nouvel essai après `payment.expired`,
+   * générez une NOUVELLE référence (ex. `CMD-42-2`) : rejouer celle d'un paiement expiré lève
+   * `TechnasPayError` `payment_expired` (409).
+   */
   reference: string;
   /**
    * `country` : code ISO à deux lettres ("TG", "CM"…). Sans `currency`, il fixe la devise
@@ -291,6 +296,8 @@ export class TechnasPayError extends Error {
     readonly status: number,
     readonly errors?: { field: string; message: string }[],
     /**
+     * `payment_expired` : la référence passée à `askForPayment` est celle d'un essai expiré ; créez
+     * un nouveau paiement avec une NOUVELLE référence (ne réessayez pas le même appel).
      * Précisions selon le code : `missingAmount` et `currency` pour `insufficient_balance`
      * (rechargez au moins ce montant avec `topUpBalance`), `refundableAmount` pour
      * `refund_exceeds_payment`.
