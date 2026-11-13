@@ -7,7 +7,7 @@ Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de 
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.7.1
+npm install github:Technas-Organization/technas-pay-next#v0.7.2
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -111,8 +111,11 @@ export const POST = pay.webhookHandler({
   paiement en `expired` et envoie `payment.expired`. Comptez quelques minutes après `expiresAt`.
 - `canRetry(payment)` vaut `true` seulement pour `expired` ; `isFinal(payment)` dit si le statut
   ne changera plus (`failed` : jamais final).
-- Relancer avec la MÊME référence rend le même paiement expiré : changez-la (par exemple
-  `CMD-42-2`).
+- **Une référence = un essai.** Rejouer la référence d'un paiement expiré est refusé :
+  `TechnasPayError` `payment_expired` (409), qui dit de créer un nouveau paiement avec une
+  NOUVELLE référence. Changez-la (par exemple `CMD-42-2`) et gardez le nouveau `payment.id`.
+- `checkoutUrl` est la page Technas : elle mène à l'opérateur tant que le lien est payable et
+  affiche « Lien expiré » ensuite. Un paiement `expired` a `checkoutUrl: null`.
 - Un paiement `expired` ne sera jamais crédité. Si, par un cas qui ne devrait pas arriver, de
   l'argent arrivait après coup, Technas le rend au payeur et vous prévient.
 
@@ -245,7 +248,7 @@ En test (`tps_test_`), un remboursement est terminé aussitôt, avec des frais r
 - **Un même événement peut arriver plusieurs fois.** Technas relivre tant que votre route ne répond pas 2xx, pendant environ 3 jours. `event.id` permet d'ignorer un doublon.
 - **Un refus n'est pas définitif.** Le client peut réessayer sur la même page, et `onCompleted` arriver après `onFailed`. Seul `expired` l'est (voir « La règle de relance »).
 - **Retour au site sur succès seulement.** Après un refus ou un abandon, le client reste sur la page de paiement.
-- **Une référence, un paiement.** Relancer `askForPayment` avec la même référence rend le même paiement. Pour une nouvelle tentative, attendez `payment.expired` (ou `canRetry`), puis utilisez une nouvelle référence.
+- **Une référence = un essai.** Relancer `askForPayment` avec la même référence rend le même essai (utile après une coupure). Pour une nouvelle tentative, attendez `payment.expired` (ou `canRetry`), puis utilisez une NOUVELLE référence ; l'ancienne lève `payment_expired`.
 - **Reprise.** Si `error.retryable` est vrai, refaites le même appel avec la même référence.
 
 ## Autres fonctions
