@@ -6,6 +6,8 @@ Agents de code : lisez d'abord AGENTS.md, qui donne les règles courtes (méthod
 
 Une référence = un essai. Règle de relance : relancez avec une NOUVELLE référence seulement après payment.expired (ou getPayment → expired, `canRetry`), jamais sur failed : un refus n'est pas définitif, le client peut encore payer sur la même page pendant une heure. Rejouer la référence d'un paiement expiré lève payment_expired (409).
 
+Hors zone franc CFA (Ghana, Nigeria…) : option `local` seulement, activée par l'utilisateur lui-même après avoir lu le risque (`getFxMode().risks.local`, puis `setFxMode({ mode: "local", acceptRisk: true })`) ; Technas ne couvre aucun risque de change. `converted` n'est pas ouvert (`fx_mode_unavailable`).
+
 - [AGENTS.md](AGENTS.md) : règles pour un agent de code, à appliquer dans l'application de l'utilisateur
 - [README.md](README.md) : guide complet, avec l'exemple de back-office de remboursement
 - [src/index.ts](src/index.ts) : types et commentaires de chaque fonction

@@ -484,3 +484,14 @@ test("rejouer une référence expirée : payment_expired, pas de nouvel essai co
     (e) => e instanceof TechnasPayError && e.code === "payment_expired" && e.status === 409 && e.retryable === false,
   );
 });
+
+test("getFxMode rend les options ouvertes ; converted refusé avec fx_mode_unavailable", async () => {
+  const pay = createTechnasPay({
+    secret: SECRET,
+    fetch: async (_url, init) => init.method === "PUT"
+      ? Response.json({ code: "fx_mode_unavailable", message: "The converted mode is not open yet" }, { status: 422 })
+      : Response.json({ mode: "none", available_modes: ["none", "local"], home_currency: "XOF", risks: {}, countries: [] }),
+  });
+  assert.deepEqual((await pay.getFxMode()).availableModes, ["none", "local"]);
+  await assert.rejects(pay.setFxMode({ mode: "converted", acceptRisk: true }), (e) => e.code === "fx_mode_unavailable" && !e.retryable);
+});
