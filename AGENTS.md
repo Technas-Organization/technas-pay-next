@@ -31,7 +31,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.8.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.9.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -109,7 +109,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 
 **Une référence = un essai. Relancez avec une NOUVELLE référence seulement après `payment.expired` (ou `getPayment` → `expired`), jamais sur `failed`.**
 
-- Ne prenez pas l'identifiant de commande tel quel comme `reference` : composez `${orderId}-${tentative}` et gardez la tentative en base, pour pouvoir en créer une nouvelle.
+- Ne prenez pas l'identifiant de commande tel quel comme `reference` : composez `${orderId}-${tentative}` (`retryReference(orderId, tentative)`) et gardez la tentative en base, pour pouvoir en créer une nouvelle.
 - Rejouer la référence d'un paiement expiré lève `payment_expired` (409) : ne réessayez pas le même appel, créez une nouvelle référence.
 - Après expiration, `checkoutUrl` vaut `null` : n'envoyez jamais l'ancien lien au client.
 

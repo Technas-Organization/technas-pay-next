@@ -7,10 +7,12 @@ Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de 
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.8.0
+npm install github:Technas-Organization/technas-pay-next#v0.9.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
+
+Il s'appuie sur [`@technas/pay`](https://github.com/Technas-Organization/technas-pay-node), le même SDK sans framework (Express, Fastify, NestJS…), installé avec lui. Autres langages : [Python](https://github.com/Technas-Organization/technas-pay-python).
 
 Technas vous remet **un secret**. Mettez-le dans vos variables d'environnement serveur, sans préfixe `NEXT_PUBLIC_` :
 
