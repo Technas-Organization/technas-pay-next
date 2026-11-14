@@ -7,7 +7,7 @@ Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de 
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.8.0
+npm install github:Technas-Organization/technas-pay-next#v0.9.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -119,6 +119,58 @@ await pay.setFxMode({ mode: "local", acceptRisk: true, markupPct: 2 });
 - **Mode `converted`** : chaque change vous est annoncé par `onBalanceConverted`, avec le cours réellement obtenu et le coût retiré.
 - **Sécurité** : chaque changement d'option vous est annoncé par `onFxModeUpdated`. Si ce n'est pas vous, prévenez Technas.
 - **Montants à centimes** : hors zone, un montant peut avoir des centimes (cedis…). Ne l'arrondissez pas.
+
+### Paiement par carte bancaire
+
+Le mobile money arrive sur votre solde Technas, reversé ensuite sur votre numéro. La carte suit un autre chemin : vous avez **votre propre compte carte**, le client le paie directement, et la commission Technas est retirée au passage. Technas ne détient pas cet argent : il n'apparaît pas dans `getBalance()`.
+
+**1. Ouvrir le compte carte, une seule fois.** C'est le responsable du compte qui le fait, depuis vos réglages :
+
+```ts
+// app/reglages/carte/actions.ts
+"use server";
+import { redirect } from "next/navigation";
+import { pay } from "@/lib/pay";
+
+export async function activerLaCarte() {
+  const { url } = await pay.startCardOnboarding({
+    country: "FR", // VOTRE pays, pas celui de vos clients
+    returnUrl: "https://votre-site.com/reglages/carte?fin=1",
+    refreshUrl: "https://votre-site.com/reglages/carte?relance=1", // lien expiré : rappelez activerLaCarte
+  });
+  redirect(url); // le prestataire carte y demande l'identité et la banque ; Technas ne voit pas l'IBAN
+}
+```
+
+Ensuite, `await pay.getCardAccount()` dit où il en est :
+
+| `status` | Ce que ça veut dire |
+|---|---|
+| `not_started` | Jamais ouvert |
+| `onboarding` | Inscription commencée, pas finie : rappelez `startCardOnboarding` |
+| `under_review` | Tout est donné, vérification en cours |
+| `restricted` | Il manque quelque chose (`requirements`) ou le compte est suspendu (`disabledReason`) |
+| `enabled` | La carte est ouverte (`canAcceptPayments: true`) |
+
+Le webhook `onCardAccountUpdated` vous prévient de chaque changement. Une fois l'inscription finie, le même `startCardOnboarding` (ou `getCardDashboardLink()`) ouvre son tableau de bord carte : virements vers la banque, litiges.
+
+**2. Faire payer par carte**, seulement si `canAcceptPayments` est vrai :
+
+```ts
+const { checkoutUrl } = await pay.askForPayment({
+  method: "card",
+  amount: 49.9, // 49,90 € : les décimales sont permises par carte
+  currency: "EUR", // obligatoire par carte
+  reference: commandeId,
+  customer: { email, name },
+  returnUrl: "https://votre-site.com/merci",
+});
+redirect(checkoutUrl);
+```
+
+Tout le reste ne change pas : webhook `onCompleted`, une référence = un essai, `payment.expired` au bout d'une heure, `refund` pour rembourser (sur la carte, depuis votre compte carte ; la commission n'est pas rendue). Sans compte prêt, l'appel lève `card_account_not_ready` (409) : proposez alors le mobile money.
+
+En mode test, payez avec la carte `4242 4242 4242 4242`, une date future et n'importe quel code.
 
 ## 3. Recevoir la confirmation
 
@@ -312,6 +364,8 @@ En test (`tps_test_`), un remboursement est terminé aussitôt, avec des frais r
 | `pay.topUpBalance({ amount, currency })` | Recharger votre solde, sans commission |
 | `pay.getFxMode()` / `pay.setFxMode({ mode, acceptRisk, markupPct? })` | Votre option hors zone CFA, ses risques, les pays ouverts |
 | `pay.setCountryRules({ allowed?, excluded? })` | Les pays où vous vendez |
+| `pay.startCardOnboarding({ country, returnUrl, refreshUrl })` | Ouvrir ou finir votre compte carte (voir « Paiement par carte bancaire ») |
+| `pay.getCardAccount()` / `pay.getCardDashboardLink()` | État de votre compte carte / son tableau de bord |
 | `pay.getBalance()` | Votre solde : ce que Technas vous doit, par devise, après commission |
 | `pay.listTransactions({ limit, status, cursor })` | L'historique de vos paiements, par pages |
 | `pay.getSettlements()` | Vos reversements : `amount` quitte votre solde, `fee` (frais mobile money, à votre charge) en est déduit |

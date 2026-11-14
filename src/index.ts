@@ -26,9 +26,24 @@ export function canRetry(payment: { status: PaymentStatus | string }): boolean {
   return payment.status === "expired";
 }
 
+/**
+ * Comment le client paie. Jamais le nom d'un fournisseur : Technas choisit qui fait passer le paiement.
+ * - `mobile_money` (défaut) : Flooz, T-Money, MTN, Orange… L'argent arrive sur votre solde Technas,
+ *   reversé ensuite sur votre numéro.
+ * - `card` : carte bancaire (et Apple Pay / Google Pay selon l'appareil). Exige un COMPTE CARTE actif :
+ *   `startCardOnboarding` une fois, puis `getCardAccount().canAcceptPayments === true`. L'argent arrive
+ *   directement sur ce compte (Technas ne le détient pas) : votre solde Technas ne bouge pas.
+ */
+export type PaymentMethod = "mobile_money" | "card";
+
 export interface AskForPaymentInput {
-  /** Montant entier en unité principale : 5000 = 5 000 FCFA. */
+  /**
+   * Montant en unité principale, jamais ×100 : 5000 = 5 000 FCFA, 12.5 = 12,50 €.
+   * Entier pour le mobile money ; décimales seulement par carte, dans une devise qui en a (EUR, USD…).
+   */
   amount: number;
+  /** `mobile_money` par défaut. `card` exige `currency` et un compte carte actif. */
+  method?: PaymentMethod;
   /**
    * Facultative. Sans elle : la devise du pays du client (`customer.country`, zone franc CFA),
    * sinon `defaultCurrency`, sinon le payeur choisit son pays sur la page de paiement
@@ -98,6 +113,8 @@ export interface Payment {
   /** Ce qui vous revient. */
   netAmount: number;
   status: PaymentStatus;
+  /** `mobile_money` ou `card`. */
+  method: PaymentMethod;
   checkoutUrl: string | null;
   metadata: Record<string, unknown>;
   testMode: boolean;
@@ -207,6 +224,11 @@ export interface PayoutDestinationEvent {
 export type RefundFees = "partner" | "customer";
 
 export interface Refund {
+  /**
+   * `payout` : renvoyé par Technas sur le numéro mobile money qui a payé (débité de votre solde).
+   * `stripe` : paiement par carte, remboursé sur la carte depuis VOTRE compte carte (solde Technas intact).
+   * `external` : fait hors plateforme, seulement enregistré.
+   */
   id: string;
   paymentId: string;
   /** La `reference` de la commande remboursée. */
@@ -226,7 +248,7 @@ export interface Refund {
   /** Raison d'un échec. Le solde est alors recrédité de `balanceDebit`. */
   failure: string | null;
   /** `payout` : renvoyé par Technas. `external` : fait hors plateforme, seulement enregistré. */
-  kind: "payout" | "external";
+  kind: "payout" | "external" | "stripe";
   /** Remboursement enregistré : le moyen utilisé ("Flooz", "Espèces"…), la note, qui l'a fait. */
   method: string | null;
   note: string | null;
@@ -262,6 +284,49 @@ export interface TopUpEvent {
 }
 
 /** Un type d'événement que cette version du package ne connaît pas encore. */
+/**
+ * Où en est votre compte de paiement par carte.
+ * - `not_started` : jamais ouvert, appelez `startCardOnboarding`.
+ * - `onboarding` : inscription commencée, pas finie (identité, banque…) : renvoyez le responsable sur un lien neuf.
+ * - `under_review` : tout est donné, Stripe vérifie (quelques minutes à quelques jours).
+ * - `restricted` : il manque quelque chose (`requirements`) ou le compte est suspendu (`disabledReason`).
+ * - `enabled` : les paiements par carte sont ouverts.
+ */
+export type CardAccountStatus = "not_started" | "onboarding" | "under_review" | "restricted" | "enabled";
+
+export interface CardAccount {
+  status: CardAccountStatus;
+  /** Seule condition pour `askForPayment({ method: "card" })`. */
+  canAcceptPayments: boolean;
+  /** L'argent encaissé part vers votre banque (calendrier réglé dans votre tableau de bord carte). */
+  payoutsEnabled: boolean;
+  detailsSubmitted: boolean;
+  /** Pays du compte (le vôtre, pas celui de vos clients). */
+  country: string | null;
+  /** Ce qui manque encore, en codes Stripe (`external_account`, `individual.verification.document`…). */
+  requirements: string[];
+  disabledReason: string | null;
+  testMode: boolean;
+  updatedAt: string | null;
+}
+
+export interface CardOnboardingLink {
+  /** À ouvrir par le RESPONSABLE du compte (pas le développeur) : il y donne son identité et sa banque. */
+  url: string;
+  /** `onboarding` : inscription à faire ou finir. `dashboard` : déjà fini, son tableau de bord (virements, banque). */
+  kind: "onboarding" | "dashboard";
+  /** Le lien d'inscription expire vite (minutes) : ne l'envoyez pas par e-mail, générez-le au clic. */
+  expiresAt: string | null;
+  account: CardAccount;
+}
+
+export interface CardAccountEvent {
+  id: string;
+  type: "card_account.updated";
+  createdAt: string;
+  account: CardAccount;
+}
+
 export interface OtherEvent {
   id: string;
   type: string;
@@ -276,6 +341,7 @@ export type TechnasPayEvent =
   | TopUpEvent
   | BalanceConvertedEvent
   | FxModeEvent
+  | CardAccountEvent
   | OtherEvent;
 
 export interface WebhookHandlers {
@@ -300,6 +366,8 @@ export interface WebhookHandlers {
   onBalanceConverted?: (event: BalanceConvertedEvent) => void | Promise<void>;
   /** Votre option hors zone CFA a changé. Si ce n'est pas vous, prévenez Technas. */
   onFxModeUpdated?: (event: FxModeEvent) => void | Promise<void>;
+  /** Votre compte carte a changé d'état (ouvert, à compléter, suspendu…). */
+  onCardAccountUpdated?: (event: CardAccountEvent) => void | Promise<void>;
 }
 
 export interface TechnasPayOptions {
@@ -355,6 +423,8 @@ export class TechnasPayError extends Error {
       reason?: string;
       /** `risk_not_accepted` : le texte du risque à accepter. */
       risk?: string;
+      /** `card_account_not_ready` : où en est votre compte carte (`not_started`, `onboarding`…). */
+      accountStatus?: CardAccountStatus;
     } = {},
   ) {
     super(message);
@@ -416,6 +486,20 @@ async function hmacHex(secret: string, message: string): Promise<string> {
   return toHex(await crypto.subtle.sign("HMAC", key, encoder.encode(message)));
 }
 
+function parseCardAccount(raw: any): CardAccount {
+  return {
+    status: raw.status,
+    canAcceptPayments: Boolean(raw.can_accept_payments),
+    payoutsEnabled: Boolean(raw.payouts_enabled),
+    detailsSubmitted: Boolean(raw.details_submitted),
+    country: raw.country ?? null,
+    requirements: raw.requirements ?? [],
+    disabledReason: raw.disabled_reason ?? null,
+    testMode: Boolean(raw.test_mode),
+    updatedAt: raw.updated_at ?? null,
+  };
+}
+
 function parsePayment(raw: any): Payment {
   return {
     id: raw.id,
@@ -425,6 +509,7 @@ function parsePayment(raw: any): Payment {
     commission: raw.commission,
     netAmount: raw.net_amount,
     status: raw.status,
+    method: raw.method ?? "mobile_money",
     refundedAmount: raw.refunded_amount ?? 0,
     originalAmount: raw.original_amount ?? null,
     originalCurrency: raw.original_currency ?? null,
@@ -480,6 +565,9 @@ function parseEvent(raw: any): TechnasPayEvent {
       id: raw.id, type: raw.type, createdAt: raw.created_at,
       fx: { mode: d.mode, previousMode: d.previous_mode, markupPct: d.markup_pct, homeCurrency: d.home_currency },
     };
+  }
+  if (raw.type === "card_account.updated") {
+    return { id: raw.id, type: raw.type, createdAt: raw.created_at, account: parseCardAccount(d) };
   }
   if (raw.type === "balance.topped_up") {
     return {
@@ -703,6 +791,7 @@ export function createTechnasPay(options: TechnasPayOptions) {
           ...(data?.refundable_amount !== undefined ? { refundableAmount: data.refundable_amount } : {}),
           ...(data?.reason !== undefined ? { reason: data.reason } : {}),
           ...(data?.risk !== undefined ? { risk: data.risk } : {}),
+          ...(data?.account_status !== undefined ? { accountStatus: data.account_status } : {}),
         },
       );
     }
@@ -733,12 +822,23 @@ export function createTechnasPay(options: TechnasPayOptions) {
   return {
     /** Crée la demande de paiement. Redirigez ensuite le client vers `checkoutUrl`. */
     async askForPayment(input: AskForPaymentInput): Promise<Payment & { checkoutUrl: string }> {
-      if (!Number.isInteger(input.amount) || input.amount <= 0) {
-        throw new TechnasPayError("invalid_amount", "amount doit être un entier positif (5000 = 5 000 FCFA)", 0);
+      const method: PaymentMethod = input.method ?? "mobile_money";
+      if (method !== "mobile_money" && method !== "card") {
+        throw new TechnasPayError("invalid_request", 'method vaut "mobile_money" ou "card"', 0);
+      }
+      if (!Number.isFinite(input.amount) || input.amount <= 0) {
+        throw new TechnasPayError("invalid_amount", "amount doit être positif (5000 = 5 000 FCFA, 12.5 = 12,50 €)", 0);
+      }
+      if (method === "mobile_money" && !Number.isInteger(input.amount)) {
+        throw new TechnasPayError("invalid_amount", "amount doit être un entier pour le mobile money (5000 = 5 000 FCFA)", 0);
       }
       const currency = resolveCurrency(input);
+      if (method === "card" && !currency) {
+        throw new TechnasPayError("currency_required", "currency est obligatoire pour un paiement par carte (EUR, XOF…)", 0);
+      }
       const raw = await call<any>("POST", "/v1/payments", {
         amount: input.amount,
+        ...(method === "card" ? { method } : {}),
         ...(currency ? { currency } : {}),
         reference: input.reference,
         customer: input.customer,
@@ -787,8 +887,10 @@ export function createTechnasPay(options: TechnasPayOptions) {
       paymentId: string,
       options: { amount?: number; fees?: RefundFees; reference?: string } = {},
     ): Promise<Refund> {
-      if (options.amount !== undefined && (!Number.isInteger(options.amount) || options.amount <= 0)) {
-        throw new TechnasPayError("invalid_amount", "amount doit être un entier positif (5000 = 5 000 FCFA)", 0);
+      // Décimales acceptées pour un paiement par carte (12.5 €) ; Technas refuse un remboursement
+      // mobile money non entier (`invalid_amount`).
+      if (options.amount !== undefined && (!Number.isFinite(options.amount) || options.amount <= 0)) {
+        throw new TechnasPayError("invalid_amount", "amount doit être positif (5000 = 5 000 FCFA, 12.5 = 12,50 €)", 0);
       }
       if (options.fees !== undefined && options.fees !== "partner" && options.fees !== "customer") {
         throw new TechnasPayError("invalid_request", 'fees vaut "partner" ou "customer"', 0);
@@ -888,6 +990,41 @@ export function createTechnasPay(options: TechnasPayOptions) {
     },
 
     /** Ce que Technas vous doit, par devise. */
+    /**
+     * Ouvre (ou reprend) votre compte de paiement par carte, et rend le lien où le RESPONSABLE donne
+     * son identité et sa banque au prestataire carte. À appeler au clic sur « Activer la carte » :
+     * le lien expire en quelques minutes. `country` (le vôtre, ex. "FR") est requis la première fois.
+     * Une fois l'inscription finie, le même appel rend son tableau de bord (`kind: "dashboard"`).
+     * `refreshUrl` : où il revient si le lien a expiré ; rappelez alors cette méthode.
+     */
+    async startCardOnboarding(input: {
+      country?: string;
+      email?: string;
+      businessType?: "individual" | "company" | "non_profit";
+      returnUrl: string;
+      refreshUrl: string;
+    }): Promise<CardOnboardingLink> {
+      const raw = await call<any>("POST", "/v1/card/onboarding", {
+        ...(input.country ? { country: input.country.trim().toUpperCase() } : {}),
+        ...(input.email ? { email: input.email } : {}),
+        ...(input.businessType ? { business_type: input.businessType } : {}),
+        return_url: input.returnUrl,
+        refresh_url: input.refreshUrl,
+      });
+      return { url: raw.url, kind: raw.kind, expiresAt: raw.expires_at ?? null, account: parseCardAccount(raw.account) };
+    },
+
+    /** L'état de votre compte carte, relu chez le prestataire. `canAcceptPayments` décide de tout. */
+    async getCardAccount(): Promise<CardAccount> {
+      return parseCardAccount(await call<any>("GET", "/v1/card/account"));
+    },
+
+    /** Un lien vers le tableau de bord carte (virements, banque, litiges). Usage unique, à générer au clic. */
+    async getCardDashboardLink(): Promise<{ url: string }> {
+      const raw = await call<any>("POST", "/v1/card/dashboard-link", {});
+      return { url: raw.url };
+    },
+
     async getBalance(): Promise<Balance[]> {
       return call<Balance[]>("GET", "/v1/balance");
     },
@@ -1037,6 +1174,8 @@ export function createTechnasPay(options: TechnasPayOptions) {
           await handlers.onBalanceConverted?.(event as BalanceConvertedEvent);
         } else if (event.type === "fx_mode.updated") {
           await handlers.onFxModeUpdated?.(event as FxModeEvent);
+        } else if (event.type === "card_account.updated") {
+          await handlers.onCardAccountUpdated?.(event as CardAccountEvent);
         }
         // Un type inconnu est acquitté : il ne doit pas être relivré pendant trois jours.
         return Response.json({ received: true });
