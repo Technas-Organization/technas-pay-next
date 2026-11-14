@@ -495,3 +495,12 @@ test("getFxMode rend les options ouvertes ; converted refusé avec fx_mode_unava
   assert.deepEqual((await pay.getFxMode()).availableModes, ["none", "local"]);
   await assert.rejects(pay.setFxMode({ mode: "converted", acceptRisk: true }), (e) => e.code === "fx_mode_unavailable" && !e.retryable);
 });
+
+test("Next : chaque appel part avec cache no-store, sans écraser méthode ni en-têtes", async () => {
+  let init;
+  const pay = createTechnasPay({ secret: SECRET, fetch: async (_u, i) => { init = i; return Response.json([]); } });
+  await pay.getBalance();
+  assert.equal(init.cache, "no-store");
+  assert.equal(init.method, "GET");
+  assert.ok(init.headers.Authorization.startsWith("Bearer "));
+});

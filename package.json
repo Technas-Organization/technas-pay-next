@@ -1,6 +1,6 @@
 {
   "name": "@technas/pay-next",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Encaisser des paiements via Technas depuis une application Next.js.",
   "license": "MIT",
   "type": "module",
@@ -39,5 +39,8 @@
     "type": "git",
     "url": "git+https://github.com/Technas-Organization/technas-pay-next.git"
   },
-  "homepage": "https://github.com/Technas-Organization/technas-pay-next#readme"
+  "homepage": "https://github.com/Technas-Organization/technas-pay-next#readme",
+  "dependencies": {
+    "@technas/pay": "github:Technas-Organization/technas-pay-node#v0.9.0"
+  }
 }
