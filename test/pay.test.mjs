@@ -276,7 +276,8 @@ test("refund : sans montant, frais au partenaire par défaut", async () => {
 
 test("refund : montant ou frais invalides refusés avant tout appel", async () => {
   const pay = createTechnasPay({ secret: SECRET, fetch: () => assert.fail("aucun appel attendu") });
-  await assert.rejects(pay.refund("p1", { amount: 10.5 }), (e) => e.code === "invalid_amount");
+  await assert.rejects(pay.refund("p1", { amount: -5 }), (e) => e.code === "invalid_amount");
+  await assert.rejects(pay.refund("p1", { amount: Number.NaN }), (e) => e.code === "invalid_amount");
   await assert.rejects(pay.refund("p1", { fees: "technas" }), (e) => e.code === "invalid_request");
 });
 
@@ -494,4 +495,89 @@ test("getFxMode rend les options ouvertes ; converted refusé avec fx_mode_unava
   });
   assert.deepEqual((await pay.getFxMode()).availableModes, ["none", "local"]);
   await assert.rejects(pay.setFxMode({ mode: "converted", acceptRisk: true }), (e) => e.code === "fx_mode_unavailable" && !e.retryable);
+});
+
+test("paiement par carte : décimales acceptées, devise obligatoire, method envoyée", async () => {
+  let corps;
+  const pay = createTechnasPay({
+    secret: SECRET,
+    fetch: async (_url, init) => {
+      corps = JSON.parse(init.body);
+      return Response.json({ id: "p1", reference: "c1", amount: 49.9, currency: "EUR", commission: 1.25, net_amount: 48.65, status: "pending", method: "card", checkout_url: "https://c.test", metadata: {}, test_mode: false, created_at: "x" });
+    },
+  });
+  const p = await pay.askForPayment({ method: "card", amount: 49.9, currency: "eur", reference: "c1", customer: { email: "a@b.co", name: "A" }, returnUrl: "https://p.test/ok" });
+  assert.equal(corps.method, "card");
+  assert.equal(corps.amount, 49.9);
+  assert.equal(corps.currency, "EUR");
+  assert.equal(p.method, "card");
+  await assert.rejects(
+    pay.askForPayment({ method: "card", amount: 10, reference: "c2", customer: { email: "a@b.co", name: "A" }, returnUrl: "https://p.test" }),
+    (e) => e.code === "currency_required",
+  );
+  await assert.rejects(
+    pay.askForPayment({ amount: 10.5, currency: "XOF", reference: "c3", customer: { email: "a@b.co", name: "A" }, returnUrl: "https://p.test" }),
+    (e) => e.code === "invalid_amount",
+  );
+});
+
+test("le mobile money n'envoie pas de method (rétrocompatible) et lit method par défaut", async () => {
+  let corps;
+  const pay = createTechnasPay({
+    secret: SECRET,
+    fetch: async (_url, init) => {
+      corps = JSON.parse(init.body);
+      return Response.json({ id: "p1", reference: "r", amount: 5000, currency: "XOF", commission: 100, net_amount: 4900, status: "pending", checkout_url: "https://c.test", metadata: {}, test_mode: true, created_at: "x" });
+    },
+  });
+  const p = await pay.askForPayment({ amount: 5000, currency: "XOF", reference: "r", customer: { email: "a@b.co", name: "A" }, returnUrl: "https://p.test" });
+  assert.equal(corps.method, undefined);
+  assert.equal(p.method, "mobile_money");
+});
+
+test("compte carte : inscription, état, tableau de bord, et l'erreur card_account_not_ready", async () => {
+  const vus = [];
+  const compte = { status: "onboarding", can_accept_payments: false, payouts_enabled: false, details_submitted: false, country: "FR", requirements: ["external_account"], disabled_reason: null, test_mode: true, updated_at: null };
+  const pay = createTechnasPay({
+    secret: SECRET,
+    baseUrl: "https://gw.test",
+    fetch: async (url, init) => {
+      vus.push([init.method, new URL(url).pathname, init.body && JSON.parse(init.body)]);
+      if (url.endsWith("/v1/card/onboarding")) return Response.json({ url: "https://connect.test/x", kind: "onboarding", expires_at: "t", account: compte });
+      if (url.endsWith("/v1/card/account")) return Response.json(compte);
+      if (url.endsWith("/v1/card/dashboard-link")) return Response.json({ url: "https://dash.test" });
+      return Response.json({ code: "card_account_not_ready", message: "m", account_status: "onboarding" }, { status: 409 });
+    },
+  });
+  const lien = await pay.startCardOnboarding({ country: "fr", returnUrl: "https://p.test/ok", refreshUrl: "https://p.test/again" });
+  assert.equal(lien.kind, "onboarding");
+  assert.deepEqual(vus[0], ["POST", "/v1/card/onboarding", { country: "FR", return_url: "https://p.test/ok", refresh_url: "https://p.test/again" }]);
+  const etat = await pay.getCardAccount();
+  assert.equal(etat.canAcceptPayments, false);
+  assert.deepEqual(etat.requirements, ["external_account"]);
+  assert.equal((await pay.getCardDashboardLink()).url, "https://dash.test");
+  await assert.rejects(
+    pay.askForPayment({ method: "card", amount: 10, currency: "EUR", reference: "c", customer: { email: "a@b.co", name: "A" }, returnUrl: "https://p.test" }),
+    (e) => e.code === "card_account_not_ready" && e.details.accountStatus === "onboarding" && e.retryable === false,
+  );
+});
+
+test("l'avis card_account.updated arrive dans onCardAccountUpdated", async () => {
+  const body = JSON.stringify({ id: "evt_c", type: "card_account.updated", created_at: "x", data: { status: "enabled", can_accept_payments: true, payouts_enabled: true, details_submitted: true, country: "FR", requirements: [], disabled_reason: null, test_mode: false, updated_at: "y" } });
+  let recu;
+  const pay = createTechnasPay({ secret: SECRET });
+  const res = await pay.webhookHandler({ onCardAccountUpdated: (e) => { recu = e; } })(request(body, sign(body)));
+  assert.equal(res.status, 200);
+  assert.equal(recu.account.canAcceptPayments, true);
+  assert.equal(recu.account.status, "enabled");
+});
+
+
+test("Next : chaque appel part avec cache no-store, sans écraser méthode ni en-têtes", async () => {
+  let init;
+  const pay = createTechnasPay({ secret: SECRET, fetch: async (_u, i) => { init = i; return Response.json([]); } });
+  await pay.getBalance();
+  assert.equal(init.cache, "no-store");
+  assert.equal(init.method, "GET");
+  assert.ok(init.headers.Authorization.startsWith("Bearer "));
 });
