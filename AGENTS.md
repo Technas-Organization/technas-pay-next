@@ -33,10 +33,11 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 | Tableau de bord carte (virements, banque, litiges) | `pay.getCardDashboardLink()` → tableau de bord du compte carte, identifiants du responsable |
 | Tester la route webhook | `pay.createTestWebhook(type, paiement)` |
 | Jouer le payeur en test (réussi, refusé, expiré) | `pay.simulateTestPayment(id, "completed" \| "failed" \| "expired")` |
+| Le client change d'offre ou revient plus tard | nouvel essai `retryReference(factureId, n + 1)` ; au retour, `pay.getPayment(dernierPaymentId)` d'abord (section « Le client change d'offre ou revient plus tard ») |
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.11.1`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.12.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -127,6 +128,59 @@ Ne réécrivez pas de routes : `export const { GET, POST } = pay.appRoutes({ aut
 - La même référence rend le même paiement expiré : générez-en une nouvelle (ex. `${orderId}-2`) et gardez le nouveau `payment.id`.
 - Expliquez cette règle à l'utilisateur : un client relancé sur `failed` pourrait payer deux fois.
 
+## Le client change d'offre ou revient plus tard
+
+La règle de relance vise VOS relances. Quand c'est le client qui revient ou choisit une autre offre, c'est un nouvel essai, jamais un refus « un paiement existe déjà ».
+
+- **Une référence = un essai.** Nouvelle offre, ou retour après expiration : un NOUVEL essai, avec une nouvelle référence `retryReference(factureId, n + 1)` (`n` gardé en base). Réutiliser la référence d'un autre montant lève `reference_conflict` (409) ; celle d'un essai expiré, `payment_expired` (409). Les routes toutes faites (`appRoutes`) le font seules.
+- **Une facture n'est payée QUE sur `payment.completed`** (avis signé, `onCompleted`). Jamais sur `returnUrl`, jamais à l'ouverture de la page.
+- **Un essai non payé ne bloque jamais un nouvel essai.** `pending` ou `failed` et le client change d'offre : créez le nouvel essai, ne refusez pas. `expired` : marquez la tentative expirée et laissez recommencer.
+- **Au retour du client**, vérifiez avec `pay.getPayment(dernierPaymentId)` avant de dire quoi que ce soit ; ne vous fiez jamais seulement à votre propre base.
+- **Un ancien essai payé APRÈS le nouveau** (le client a payé les deux pages) : n'activez rien deux fois ; remboursez l'essai en trop avec `pay.refund(paymentId)`.
+
+Avec l'App Router :
+
+```ts
+// app/factures/actions.ts : au clic « Payer » (Server Action)
+"use server";
+import { redirect } from "next/navigation";
+import { retryReference } from "@technas/pay-next";
+import { pay } from "@/lib/pay";
+
+export async function payer(factureId: string, offreId: string) {
+  const facture = await db.facture.findUniqueOrThrow({ where: { id: factureId } });
+  const offre = await db.offre.findUniqueOrThrow({ where: { id: offreId } }); // montant lu EN BASE
+  if (facture.dernierPaymentId) {
+    const dernier = await pay.getPayment(facture.dernierPaymentId); // Technas, pas seulement la base
+    if (dernier.status === "completed") redirect(`/factures/${factureId}`); // déjà payée
+  }
+  // pending, failed, expired ou autre montant : un NOUVEL essai, jamais un refus.
+  const n = facture.essais + 1;
+  const p = await pay.askForPayment({
+    amount: offre.montant,
+    reference: retryReference(factureId, n),
+    customer: { email: facture.email, name: facture.nom },
+    returnUrl: `${process.env.SITE_URL}/factures/${factureId}`,
+    metadata: { facture_id: factureId },
+  });
+  await db.facture.update({ where: { id: factureId }, data: { essais: n, dernierPaymentId: p.id } });
+  redirect(p.checkoutUrl!);
+}
+
+// app/api/technas-pay/route.ts : la facture n'est payée QU'ici
+export const POST = pay.webhookHandler({
+  async onCompleted(event) {
+    const id = String(event.payment.metadata.facture_id);
+    const facture = await db.facture.findUniqueOrThrow({ where: { id } });
+    if (facture.payeePar && facture.payeePar !== event.payment.id) {
+      await pay.refund(event.payment.id); // l'autre page a aussi été payée : rembourser celle-ci
+      return;
+    }
+    await db.facture.update({ where: { id }, data: { payeePar: event.payment.id, montantPaye: event.payment.amount } });
+  },
+});
+```
+
 ## Webhooks
 
 - **Ils peuvent arriver plusieurs fois** : vos fonctions doivent le supporter. Vérifiez l'état en base, ou gardez `event.id`.
@@ -212,7 +266,7 @@ En réel, un compte sans pièce d'identité vérifiée voit ses NOUVEAUX paiemen
 | `risk_not_accepted` | Montrer `error.details.risk` à l'utilisateur ; n'activer qu'avec son accord explicite |
 | `fx_mode_unavailable`, `fx_channel_unavailable` | Mode `converted` pas ouvert : proposer `local` (avec l'accord de l'utilisateur sur le risque) ou rester en `none` |
 | `quote_expired` | Le client rechoisit son pays sur la page, rien à faire côté code |
-| `reference_conflict` | Même référence, autres valeurs : ne pas réutiliser la référence |
+| `reference_conflict` | Même référence, autres valeurs (le client a changé d'offre) : nouvel essai `retryReference(id, n + 1)`, jamais la même référence |
 | `payment_in_progress` | Réessayer dans une minute, même appel |
 | `payment_not_found`, `refund_not_found` | Mauvais identifiant ou autre compte |
 | `payment_expired` | Cette référence est un essai expiré : nouveau paiement avec une NOUVELLE référence, jamais le même appel |
