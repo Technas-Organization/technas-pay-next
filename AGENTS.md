@@ -1,6 +1,6 @@
 # @technas/pay-next : règles pour un agent de code
 
-Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans l'application de l'utilisateur, pas dans ce dépôt. Le README détaille chaque fonction. Un exemple complet se trouve dans [`example/`](example).
+Consignes pour un assistant de code. Appliquez-les dans l'application de l'utilisateur, pas dans ce dépôt. Le README détaille chaque fonction. Un exemple complet se trouve dans [`example/`](example).
 
 ## Avant de commencer
 
@@ -29,7 +29,7 @@ Consignes pour un assistant de code (Codex, Claude Code…). Appliquez-les dans 
 | Faire payer par carte bancaire | d'abord un compte carte actif (section « Paiement par carte »), puis `pay.askForPayment({ method: "card", amount, currency, ... })` |
 | Ouvrir ou finir le compte carte | `pay.startCardOnboarding({ country, returnUrl, refreshUrl })`, puis rediriger le RESPONSABLE vers `url` |
 | Savoir si la carte est ouverte | `(await pay.getCardAccount()).canAcceptPayments`, ou webhook `onCardAccountUpdated` |
-| Tableau de bord carte (virements, banque, litiges) | `pay.getCardDashboardLink()` → https://dashboard.stripe.com/, identifiants Stripe du responsable |
+| Tableau de bord carte (virements, banque, litiges) | `pay.getCardDashboardLink()` → tableau de bord du compte carte, identifiants du responsable |
 | Tester la route webhook | `pay.createTestWebhook(type, paiement)` |
 | Jouer le payeur en test (réussi, refusé, expiré) | `pay.simulateTestPayment(id, "completed" \| "failed" \| "expired")` |
 
@@ -149,11 +149,11 @@ Ce n'est PAS le même parcours que le mobile money. Ne le proposez que si l'util
    - Le lien expire en quelques minutes : générez-le au clic, ne l'envoyez jamais par e-mail.
    - Sur `refreshUrl`, rappelez `startCardOnboarding` et redirigez à nouveau.
    - Sur `returnUrl`, affichez `await pay.getCardAccount()` : `status` dit où il en est (`onboarding`, `under_review`, `restricted`, `enabled`) et `requirements` ce qui manque.
-   - Le responsable y donne son identité et sa banque au prestataire carte. Ni vous ni Technas ne voyez son IBAN.
+   - Le responsable s'inscrit sur la page sécurisée de notre partenaire carte (Stripe), qui vous fera accepter son contrat : il y donne son identité et sa banque. Ni vous ni Technas ne voyez son IBAN.
 2. **Proposer la carte seulement si `canAcceptPayments` est vrai.** Gardez l'état en base via `onCardAccountUpdated`, ou relisez `getCardAccount()`. Sinon, ne montrez que le mobile money.
 3. **Faire payer :** `pay.askForPayment({ method: "card", amount: 49.9, currency: "EUR", reference, customer, returnUrl })`, puis `redirect(checkoutUrl)`. `currency` est obligatoire par carte. Le reste est identique : même webhook `onCompleted`, même règle « une référence = un essai », même `payment.expired` au bout d'une heure.
 4. **L'argent va directement sur le compte carte de l'utilisateur**, commission Technas déjà retirée. Il n'apparaît PAS dans `getBalance()` et ne passe pas par les reversements. Les virements vers sa banque se règlent dans son tableau de bord carte (`getCardDashboardLink()`).
-5. **Rembourser :** le même `pay.refund(paymentId, { amount? })`. La carte est remboursée depuis son compte carte (`refund.kind === "stripe"`), sans toucher au solde Technas ; `fees` est sans objet. La commission n'est pas rendue.
+5. **Rembourser :** le même `pay.refund(paymentId, { amount? })`. La carte est remboursée depuis son compte carte (`refund.kind === "card"`), sans toucher au solde Technas ; `fees` est sans objet. La commission n'est pas rendue.
 6. **Erreur `card_account_not_ready` (409)** : le compte n'encaisse pas encore. `error.details.accountStatus` dit pourquoi. Ne réessayez pas : proposez le mobile money, ou renvoyez le responsable vers `startCardOnboarding`.
 7. **En test** (`tps_test_`), la carte de test `4242 4242 4242 4242`, une date future et n'importe quel code valident le paiement ; l'inscription de test accepte des données fictives.
 
