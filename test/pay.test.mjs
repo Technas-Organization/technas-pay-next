@@ -136,16 +136,16 @@ test("setPayoutDestination envoie le numéro et rend l'état par devise", async 
       return Response.json({
         destinations: [{
           currency: "XOF",
-          current: { currency: "XOF", country: "TG", network: "moov_tg", phone: "+22891111111", beneficiary_name: "Blexima", status: "active", effective_at: "2026-11-11T10:00:00Z" },
-          pending: { currency: "XOF", country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Blexima", status: "awaiting_confirmation", effective_at: null, confirm_expires_at: "2026-11-12T10:00:00Z" },
+          current: { currency: "XOF", country: "TG", network: "moov_tg", phone: "+22891111111", beneficiary_name: "Boutique Awa", status: "active", effective_at: "2026-11-11T10:00:00Z" },
+          pending: { currency: "XOF", country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Boutique Awa", status: "awaiting_confirmation", effective_at: null, confirm_expires_at: "2026-11-12T10:00:00Z" },
         }],
       }, { status: 202 });
     },
   });
-  const etat = await pay.setPayoutDestination({ country: "TG", network: "togocel", phone: "+22892222222", beneficiaryName: "Blexima" });
+  const etat = await pay.setPayoutDestination({ country: "TG", network: "togocel", phone: "+22892222222", beneficiaryName: "Boutique Awa" });
   assert.equal(seen[0].url, "https://gw.test/v1/payout-destination");
   assert.equal(seen[0].init.method, "PUT");
-  assert.deepEqual(JSON.parse(seen[0].init.body), { country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Blexima" });
+  assert.deepEqual(JSON.parse(seen[0].init.body), { country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Boutique Awa" });
   const [xof] = etat.destinations;
   assert.equal(xof.current.phone, "+22891111111");
   assert.equal(xof.pending.status, "awaiting_confirmation");
@@ -163,7 +163,7 @@ test("l'avis de changement de numéro arrive dans onPayoutDestination", async ()
   const pay = createTechnasPay({ secret: SECRET });
   const body = JSON.stringify({
     id: "evt_2", type: "payout_destination.change_scheduled", created_at: "2026-11-11T10:00:00Z",
-    data: { currency: "XOF", country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Blexima", status: "scheduled", effective_at: "2026-11-13T10:00:00Z" },
+    data: { currency: "XOF", country: "TG", network: "togocel", phone: "+22892222222", beneficiary_name: "Boutique Awa", status: "scheduled", effective_at: "2026-11-13T10:00:00Z" },
   });
   let recu;
   const res = await pay.webhookHandler({ onPayoutDestination: (e) => (recu = e), onCompleted: () => assert.fail() })(request(body, sign(body)));
@@ -322,13 +322,13 @@ test("recordExternalRefund enregistre sans argent, et arrive dans onRefund", asy
   const seen = [];
   const pay = createTechnasPay({
     secret: SECRET, baseUrl: "https://gw.test",
-    fetch: async (url, init) => (seen.push({ url, init }), Response.json({ ...REFUND, kind: "external", status: "completed", fee: 0, balance_debit: 0, method: "Flooz", note: "geste", recorded_by: "jacques" })),
+    fetch: async (url, init) => (seen.push({ url, init }), Response.json({ ...REFUND, kind: "external", status: "completed", fee: 0, balance_debit: 0, method: "Flooz", note: "geste", recorded_by: "caisse" })),
   });
-  const r = await pay.recordExternalRefund("p1", { amount: 2000, method: " Flooz ", note: "geste", recordedBy: "jacques" });
+  const r = await pay.recordExternalRefund("p1", { amount: 2000, method: " Flooz ", note: "geste", recordedBy: "caisse" });
   assert.equal(seen[0].url, "https://gw.test/v1/payments/p1/external-refunds");
-  assert.deepEqual(JSON.parse(seen[0].init.body), { amount: 2000, method: "Flooz", note: "geste", recorded_by: "jacques" });
+  assert.deepEqual(JSON.parse(seen[0].init.body), { amount: 2000, method: "Flooz", note: "geste", recorded_by: "caisse" });
   assert.equal(r.kind, "external");
-  assert.equal(r.recordedBy, "jacques");
+  assert.equal(r.recordedBy, "caisse");
   await assert.rejects(pay.recordExternalRefund("p1", { amount: 2000, method: " " }), (e) => e.code === "invalid_request");
 
   const recus = [];

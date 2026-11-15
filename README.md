@@ -342,7 +342,7 @@ await pay.recordExternalRefund(paymentId, {
   amount: 2000,
   method: "Flooz",                  // obligatoire : "T-Money", "Espèces", "Virement"…
   note: "Article abîmé, geste du SAV", // facultatif
-  recordedBy: "jacques@blexima.tg",    // facultatif : qui l'a fait
+  recordedBy: "caisse@exemple.tg",    // facultatif : qui l'a fait
 });
 ```
 
