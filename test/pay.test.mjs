@@ -581,3 +581,22 @@ test("Next : chaque appel part avec cache no-store, sans écraser méthode ni en
   assert.equal(init.method, "GET");
   assert.ok(init.headers.Authorization.startsWith("Bearer "));
 });
+
+test("remboursement par carte : la normalisation vient du cœur @technas/pay (\"stripe\" ressort \"card\")", async () => {
+  const coeur = await import("@technas/pay");
+  const ici = await import("../dist/index.js");
+  assert.equal(ici.normalizeRefundKind, coeur.normalizeRefundKind, "réexportée du cœur, pas recopiée");
+  for (const recu of ["stripe", "card"]) {
+    const pay = createTechnasPay({
+      secret: SECRET, baseUrl: "https://gw.test",
+      fetch: async () => Response.json({ ...REFUND, kind: recu, status: "completed", fee: 0, balance_debit: 0 }),
+    });
+    assert.equal((await pay.getRefund("rf1")).kind, "card", `lu depuis "${recu}"`);
+
+    const recus = [];
+    const handler = createTechnasPay({ secret: SECRET }).webhookHandler({ onRefund: (e) => recus.push(e) });
+    const body = JSON.stringify({ id: `e-${recu}`, type: "refund.completed", created_at: "x", data: { ...REFUND, kind: recu } });
+    assert.equal((await handler(request(body, sign(body)))).status, 200);
+    assert.equal(recus[0].refund.kind, "card", `webhook depuis "${recu}"`);
+  }
+});

@@ -2,11 +2,11 @@
 
 Encaissez des paiements via Technas depuis une application Next.js 13.4 ou plus récente.
 
-**Technas Pay réunit le mobile money et la carte dans un seul SDK, du serveur jusqu'à l'app Flutter.** Carte : 1 % (plus les frais Stripe de votre compte). Mobile money : 2 % (les frais de l'opérateur sont payés par le client). Sans abonnement, et une clé de test sans papier pour commencer.
+**Technas Pay réunit le mobile money et la carte dans un seul SDK, du serveur jusqu'à l'app Flutter.** Carte : 1 % (plus les frais de votre compte carte). Mobile money : 2 % (les frais de l'opérateur sont payés par le client). Sans abonnement, et une clé de test sans papier pour commencer.
 
 Devises et pays, pièces demandées, versements, comparaison avec les autres prestataires : [le hub Technas Pay](https://github.com/Technas-Organization/technas-pay).
 
-Vous intégrez avec un assistant de code (Codex, Claude Code…) ? Dites-lui de lire [AGENTS.md](AGENTS.md), livré dans le paquet avec [llms.txt](llms.txt) (`node_modules/@technas/pay-next/AGENTS.md`).
+Vous intégrez avec un assistant de code ? Dites-lui de lire [AGENTS.md](AGENTS.md), livré dans le paquet avec [llms.txt](llms.txt) (`node_modules/@technas/pay-next/AGENTS.md`).
 
 ## 1. Installer
 
@@ -144,9 +144,11 @@ export async function activerLaCarte() {
     returnUrl: "https://votre-site.com/reglages/carte?fin=1",
     refreshUrl: "https://votre-site.com/reglages/carte?relance=1", // lien expiré : rappelez activerLaCarte
   });
-  redirect(url); // le prestataire carte y demande l'identité et la banque ; Technas ne voit pas l'IBAN
+  redirect(url); // page sécurisée du partenaire carte : identité et banque ; Technas ne voit pas l'IBAN
 }
 ```
+
+Le responsable s'inscrit sur la page sécurisée de notre partenaire carte (Stripe), qui vous fera accepter son contrat.
 
 Ensuite, `await pay.getCardAccount()` dit où il en est :
 
@@ -158,7 +160,7 @@ Ensuite, `await pay.getCardAccount()` dit où il en est :
 | `restricted` | Il manque quelque chose (`requirements`) ou le compte est suspendu (`disabledReason`) |
 | `enabled` | La carte est ouverte (`canAcceptPayments: true`) |
 
-Le webhook `onCardAccountUpdated` vous prévient de chaque changement. Une fois l'inscription finie, `getCardDashboardLink()` rend https://dashboard.stripe.com/ : le responsable s'y connecte avec SES identifiants Stripe, choisis à l'inscription, pour régler ses virements et suivre ses litiges.
+Le webhook `onCardAccountUpdated` vous prévient de chaque changement. Une fois l'inscription finie, `getCardDashboardLink()` rend l'adresse du tableau de bord de votre compte carte : le responsable s'y connecte avec SES identifiants du compte carte, choisis à l'inscription, pour régler ses virements et suivre ses litiges.
 
 **2. Faire payer par carte**, seulement si `canAcceptPayments` est vrai :
 
