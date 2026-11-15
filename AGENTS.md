@@ -36,7 +36,7 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.11.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.11.1`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -183,7 +183,7 @@ Ce n'est PAS le même parcours que le mobile money. Ne le proposez que si l'util
 En réel, un compte sans pièce d'identité vérifiée voit ses NOUVEAUX paiements mobile money refusés (`kyc_required`, 409) au-delà de 1 000 000 F CFA encaissés en cumul, ou 30 jours après son premier paiement réel encaissé. Rien de ce qui existe n'est bloqué : paiement en cours, remboursement, reversement, lecture. La carte n'est pas concernée. Le responsable du compte dépose sa pièce dans la console (`consoleUrl`).
 
 - **Afficher l'état au MARCHAND** (jamais au client final), dans un composant serveur ou une route : `await pay.getAccountKyc()` rend `stage` (`ok`, `soon`, `blocked`, `verified`, `not_applicable`), `collectedXof`, `thresholdXof`, `graceDays`, `deadline`, `reason` et `consoleUrl`. Une valeur inconnue de `stage` arrive telle quelle : affichez-la sans planter.
-- **Prévenir le responsable** : ajoutez `onKycRequired` à la route webhook (avis `account.kyc_required`, envoyé à 80 % du seuil, 7 jours avant l'échéance, puis au premier refus). `event.kyc.reason` vaut `amount_80`, `deadline_7d` ou `blocked`.
+- **Prévenir le responsable** : ajoutez `onKycRequired` à la route webhook (avis `account.kyc_required`, envoyé à 80 % du seuil, 7 jours avant l'échéance, puis au premier refus). `event.kyc.reason` vaut `amount_80`, `deadline_7d` ou `blocked` ; `event.kyc` porte aussi `stage`, `blockReason` (`amount`, `duration`), `daysElapsed`, `graceDays` et `firstCollectedAt`, comme `getAccountKyc()` (`null` sur un avis plus ancien).
 - **Sur `kyc_required`** : ne réessayez jamais. Proposez la carte si elle est ouverte, sinon expliquez au client que le paiement mobile money n'est pas disponible pour le moment.
 - **Les chiffres (1 000 000, 30) viennent de l'API** (`thresholdXof`, `graceDays`) : ne les écrivez jamais en dur dans le code.
 

@@ -641,7 +641,27 @@ test("l'avis signé account.kyc_required arrive dans onKycRequired, avec un cont
   assert.equal(res.status, 200);
   assert.deepEqual(recu, {
     id: "evt_k", type: "account.kyc_required", createdAt: "x",
-    kyc: { reason: "amount_80", collectedXof: 812500, thresholdXof: 1000000, deadline: null, blocked: false, consoleUrl: "https://console.test/kyc" },
+    kyc: {
+      reason: "amount_80", collectedXof: 812500, thresholdXof: 1000000, deadline: null, blocked: false, consoleUrl: "https://console.test/kyc",
+      stage: null, blockReason: null, daysElapsed: null, graceDays: null, firstCollectedAt: null,
+    },
+  });
+});
+
+test("l'avis account.kyc_required lit stage, blockReason, daysElapsed, graceDays, firstCollectedAt", async () => {
+  const body = JSON.stringify({ id: "evt_k2", type: "account.kyc_required", created_at: "x", data: {
+    reason: "blocked", collected_xof: 400000, threshold_xof: 1000000, deadline: "2026-12-01T00:00:00Z", blocked: true,
+    console_url: "https://console.test/kyc", stage: "blocked", block_reason: "duration", days_elapsed: 31, grace_days: 30,
+    first_collected_at: "2026-10-31T09:00:00Z",
+  } });
+  let recu;
+  const pay = createTechnasPay({ secret: SECRET });
+  const res = await pay.webhookHandler({ onKycRequired: (e) => { recu = e; } })(request(body, sign(body)));
+  assert.equal(res.status, 200);
+  assert.deepEqual(recu.kyc, {
+    reason: "blocked", collectedXof: 400000, thresholdXof: 1000000, deadline: "2026-12-01T00:00:00Z", blocked: true,
+    consoleUrl: "https://console.test/kyc", stage: "blocked", blockReason: "duration", daysElapsed: 31, graceDays: 30,
+    firstCollectedAt: "2026-10-31T09:00:00Z",
   });
 });
 
