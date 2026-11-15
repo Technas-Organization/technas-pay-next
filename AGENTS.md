@@ -162,7 +162,7 @@ Ce n'est PAS le même parcours que le mobile money. Ne le proposez que si l'util
 - **Appel** : `pay.refund(paymentId)` rembourse tout ce qui reste ; `pay.refund(paymentId, { amount })` rembourse une partie.
 - **Destination** : l'argent repart au numéro qui a payé, jamais à un autre.
 - **Plafond** : le total remboursé ne dépasse jamais le montant payé.
-- **Commission** : les 2 % ne sont pas rendus.
+- **Commission** : la commission Technas n'est pas rendue.
 - **Frais du renvoi**, choisis à chaque appel avec `fees` :
   - `"partner"` (défaut) : le client reçoit tout, les frais sont pris en plus sur votre solde ;
   - `"customer"` : les frais sont retirés de ce qu'il reçoit (`sentAmount`).
