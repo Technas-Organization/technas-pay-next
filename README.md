@@ -11,7 +11,7 @@ Vous intégrez avec un assistant de code ? Dites-lui de lire [AGENTS.md](AGENTS.
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.10.0
+npm install github:Technas-Organization/technas-pay-next#v0.11.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -375,6 +375,29 @@ Gardez `payment.id` (rendu par `askForPayment` et présent dans `event.payment.i
 
 En test (`tps_test_`), un remboursement est terminé aussitôt, avec des frais réalistes, et aucun argent ne part.
 
+## Seuil d'identité
+
+En réel, un compte sans pièce d'identité vérifiée voit ses **nouveaux** paiements mobile money refusés (`kyc_required`, 409) au-delà de 1 000 000 F CFA encaissés en cumul, ou 30 jours après son premier paiement réel encaissé. Rien de ce qui existe n'est bloqué : paiement en cours, remboursement, reversement, lecture. La carte n'est pas concernée. Le responsable du compte dépose sa pièce dans la console.
+
+```ts
+// Composant serveur de votre tableau de bord marchand
+const kyc = await pay.getAccountKyc();
+// { stage: "soon", collectedXof: 812500, thresholdXof: 1000000, graceDays: 30, deadline: "…", reason: "amount", consoleUrl: "https://…" }
+```
+
+- `stage` : `ok`, `soon` (seuil proche), `blocked`, `verified`, `not_applicable` (`applies` faux). Une valeur que cette version ne connaît pas est rendue telle quelle.
+- À montrer au **marchand**, jamais au client final.
+- L'avis `account.kyc_required` arrive dans `onKycRequired` (à ajouter à `pay.webhookHandler({...})`) à 80 % du seuil, 7 jours avant l'échéance, puis au premier refus : `event.kyc` porte `reason` (`amount_80`, `deadline_7d`, `blocked`), `collectedXof`, `thresholdXof`, `deadline`, `blocked` et `consoleUrl`. Prévenez le responsable.
+- Sur `kyc_required` : ne réessayez pas. Proposez la carte, ou expliquez au client que le paiement mobile money n'est pas disponible pour le moment. `error.details.consoleUrl` et `error.details.reason` (`amount` ou `duration`) disent où et pourquoi.
+- Les chiffres (1 000 000, 30) viennent de l'API (`thresholdXof`, `graceDays`) : ne les écrivez pas en dur.
+
+### Erreurs liées au compte
+
+| `error.code` | Que faire |
+|---|---|
+| `kyc_required` (409) | Pièce d'identité à vérifier : ne pas réessayer ; le responsable la dépose sur `error.details.consoleUrl` (`error.details.reason` : `amount` ou `duration`) |
+| `contract_required` (409) | Le responsable accepte le contrat `error.details.version` dans la console (`error.details.consoleUrl`) ; ne pas réessayer |
+
 ## À savoir
 
 - **Seul le webhook prouve le paiement.** Un visiteur peut ouvrir `returnUrl` à la main : n'y livrez rien.
@@ -397,6 +420,7 @@ En test (`tps_test_`), un remboursement est terminé aussitôt, avec des frais r
 | `pay.setCountryRules({ allowed?, excluded? })` | Les pays où vous vendez |
 | `pay.startCardOnboarding({ country, returnUrl, refreshUrl })` | Ouvrir ou finir votre compte carte (voir « Paiement par carte bancaire ») |
 | `pay.getCardAccount()` / `pay.getCardDashboardLink()` | État de votre compte carte / son tableau de bord |
+| `pay.getAccountKyc()` | Votre seuil d'identité : état, cumul, seuil, échéance, lien de la console (voir « Seuil d'identité ») |
 | `pay.getBalance()` | Votre solde : ce que Technas vous doit, par devise, après commission |
 | `pay.listTransactions({ limit, status, cursor })` | L'historique de vos paiements, par pages |
 | `pay.getSettlements()` | Vos reversements : `amount` quitte votre solde, `fee` (frais mobile money, à votre charge) en est déduit |
