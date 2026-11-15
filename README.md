@@ -11,7 +11,7 @@ Vous intégrez avec un assistant de code ? Dites-lui de lire [AGENTS.md](AGENTS.
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.11.1
+npm install github:Technas-Organization/technas-pay-next#v0.12.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -239,6 +239,51 @@ if (canRetry(p)) {
 }
 ```
 
+#### Le client change d'offre ou revient plus tard
+
+Une référence = un essai : une autre offre, ou un retour après expiration, c'est un NOUVEL essai avec `retryReference(factureId, n + 1)`. Réutiliser la référence d'un autre montant lève `reference_conflict` (409), celle d'un essai expiré `payment_expired` (409) ; les routes toutes faites le font seules. Un essai `pending` ou `failed` ne bloque jamais un nouvel essai demandé par le client. La facture n'est payée que sur `payment.completed` (jamais sur `returnUrl`). Au retour du client, relisez le dernier essai avec `getPayment` avant de répondre. Si le client a payé deux pages, n'activez rien deux fois et remboursez l'essai en trop avec `refund`.
+
+```ts
+// app/factures/actions.ts : au clic « Payer » (Server Action)
+"use server";
+import { redirect } from "next/navigation";
+import { retryReference } from "@technas/pay-next";
+import { pay } from "@/lib/pay";
+
+export async function payer(factureId: string, offreId: string) {
+  const facture = await db.facture.findUniqueOrThrow({ where: { id: factureId } });
+  const offre = await db.offre.findUniqueOrThrow({ where: { id: offreId } }); // montant lu EN BASE
+  if (facture.dernierPaymentId) {
+    const dernier = await pay.getPayment(facture.dernierPaymentId); // Technas, pas seulement la base
+    if (dernier.status === "completed") redirect(`/factures/${factureId}`); // déjà payée
+  }
+  // pending, failed, expired ou autre montant : un NOUVEL essai, jamais un refus.
+  const n = facture.essais + 1;
+  const p = await pay.askForPayment({
+    amount: offre.montant,
+    reference: retryReference(factureId, n),
+    customer: { email: facture.email, name: facture.nom },
+    returnUrl: `${process.env.SITE_URL}/factures/${factureId}`,
+    metadata: { facture_id: factureId },
+  });
+  await db.facture.update({ where: { id: factureId }, data: { essais: n, dernierPaymentId: p.id } });
+  redirect(p.checkoutUrl!);
+}
+
+// app/api/technas-pay/route.ts : la facture n'est payée QU'ici
+export const POST = pay.webhookHandler({
+  async onCompleted(event) {
+    const id = String(event.payment.metadata.facture_id);
+    const facture = await db.facture.findUniqueOrThrow({ where: { id } });
+    if (facture.payeePar && facture.payeePar !== event.payment.id) {
+      await pay.refund(event.payment.id); // l'autre page a aussi été payée : rembourser celle-ci
+      return;
+    }
+    await db.facture.update({ where: { id }, data: { payeePar: event.payment.id, montantPaye: event.payment.amount } });
+  },
+});
+```
+
 ### Pour une app mobile : les routes toutes faites
 
 Votre app Flutter ([`technas_pay_flutter`](https://github.com/Technas-Organization/technas-pay-dart/tree/main/technas_pay_flutter)) appelle ces routes sans aucune glue :
@@ -404,7 +449,7 @@ const kyc = await pay.getAccountKyc();
 - **Un même événement peut arriver plusieurs fois.** Technas relivre tant que votre route ne répond pas 2xx, pendant environ 3 jours. `event.id` permet d'ignorer un doublon.
 - **Un refus n'est pas définitif.** Le client peut réessayer sur la même page, et `onCompleted` arriver après `onFailed`. Seul `expired` l'est (voir « La règle de relance »).
 - **Retour au site sur succès seulement.** Après un refus ou un abandon, le client reste sur la page de paiement.
-- **Une référence = un essai.** Relancer `askForPayment` avec la même référence rend le même essai (utile après une coupure). Pour une nouvelle tentative, attendez `payment.expired` (ou `canRetry`), puis utilisez une NOUVELLE référence ; l'ancienne lève `payment_expired`.
+- **Une référence = un essai.** Relancer `askForPayment` avec la même référence rend le même essai (utile après une coupure). Pour une nouvelle tentative (après `payment.expired`, ou quand le client change d'offre), utilisez une NOUVELLE référence ; l'ancienne lève `payment_expired` (essai expiré) ou `reference_conflict` (autre montant).
 - **Reprise.** Si `error.retryable` est vrai, refaites le même appel avec la même référence.
 
 ## Autres fonctions

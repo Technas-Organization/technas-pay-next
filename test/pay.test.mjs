@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
-import { canRetry, createTechnasPay, currencyForCountry, isFinal, TechnasPayError, WebhookVerificationError } from "../dist/index.js";
+import { canRetry, createTechnasPay, currencyForCountry, isFinal, retryReference, TechnasPayError, WebhookVerificationError } from "../dist/index.js";
 
 const SECRET = "tps_test_pk_abc-DEF_123.ws_webhook-secret_456";
 const WEBHOOK_SECRET = "ws_webhook-secret_456";
@@ -682,4 +682,60 @@ test("Next : getAccountKyc passe par le cœur avec cache: no-store", async () =>
   const pay = createTechnasPay({ secret: SECRET, baseUrl: "https://gw.test", fetch: async (_u, i) => { init = i; return Response.json(KYC); } });
   assert.equal((await pay.getAccountKyc()).thresholdXof, 1000000);
   assert.equal(init.cache, "no-store");
+});
+
+test("le client change d'offre après expiration : nouvel essai, jamais l'ancienne référence", async () => {
+  const sent = [];
+  const paiements = new Map();
+  const corps = (p) => ({ ...p, currency: "XOF", commission: 0, net_amount: p.amount, metadata: {}, test_mode: true, created_at: "x" });
+  const pay = createTechnasPay({
+    secret: SECRET,
+    baseUrl: "https://gw.test",
+    fetch: async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      const method = init.method ?? "GET";
+      if (method === "POST" && path === "/v1/payments") {
+        const b = JSON.parse(init.body);
+        sent.push({ reference: b.reference, amount: b.amount });
+        const deja = [...paiements.values()].find((p) => p.reference === b.reference);
+        if (deja && deja.amount !== b.amount) return Response.json({ code: "reference_conflict", message: "m" }, { status: 409 });
+        if (deja && deja.status === "expired") return Response.json({ code: "payment_expired", message: "m" }, { status: 409 });
+        if (deja) return Response.json(corps(deja));
+        const p = { id: `pay_${paiements.size + 1}`, reference: b.reference, amount: b.amount, status: "pending", checkout_url: "https://c.test" };
+        paiements.set(p.id, p);
+        return Response.json(corps(p), { status: 201 });
+      }
+      const sim = path.match(/^\/test-checkout\/([^/]+)\/(\w+)$/);
+      if (sim) {
+        const p = paiements.get(sim[1]);
+        p.status = sim[2];
+        if (p.status === "expired") p.checkout_url = null;
+        return Response.json(corps(p));
+      }
+      const lu = path.match(/^\/v1\/payments\/([^/]+)$/);
+      if (lu) return Response.json(corps(paiements.get(lu[1])));
+      return assert.fail(`appel inattendu ${method} ${path}`);
+    },
+  });
+  const demande = { customer: { email: "a@b.co", name: "A" }, returnUrl: "https://p.test/retour" };
+
+  const essai1 = await pay.askForPayment({ ...demande, amount: 5000, reference: retryReference("F", 1) });
+  await pay.simulateTestPayment(essai1.id, "expired");
+  const relu = await pay.getPayment(essai1.id);
+  assert.equal(relu.status, "expired");
+  assert.ok(canRetry(relu));
+
+  const essai2 = await pay.askForPayment({ ...demande, amount: 7500, reference: retryReference("F", 2) });
+  assert.equal(essai2.status, "pending");
+  assert.notEqual(essai2.id, essai1.id);
+
+  await assert.rejects(
+    pay.askForPayment({ ...demande, amount: 7500, reference: retryReference("F", 1) }),
+    (e) => e instanceof TechnasPayError && e.code === "reference_conflict" && e.status === 409 && e.retryable === false,
+  );
+  assert.deepEqual(sent, [
+    { reference: "F-1", amount: 5000 },
+    { reference: "F-2", amount: 7500 },
+    { reference: "F-1", amount: 7500 },
+  ]);
 });

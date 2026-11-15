@@ -6,6 +6,8 @@ Agents de code : lisez d'abord AGENTS.md, qui donne les règles courtes (méthod
 
 Une référence = un essai. Règle de relance : relancez avec une NOUVELLE référence seulement après payment.expired (ou getPayment → expired, `canRetry`), jamais sur failed : un refus n'est pas définitif, le client peut encore payer sur la même page pendant une heure. Rejouer la référence d'un paiement expiré lève payment_expired (409).
 
+Le client change d'offre ou revient plus tard : NOUVEL essai `retryReference(factureId, n + 1)`, jamais un refus (un essai pending, failed ou expired ne bloque rien ; la référence d'un autre montant lève reference_conflict, 409). Payée seulement sur payment.completed ; au retour, `getPayment(dernierPaymentId)` d'abord ; deux pages payées : `refund` de l'essai en trop.
+
 Carte bancaire : `method: "card"` + `currency`, seulement quand `getCardAccount().canAcceptPayments` est vrai (compte carte ouvert une fois avec `startCardOnboarding`). L'argent va directement sur le compte carte de l'utilisateur, pas sur le solde Technas.
 
 Pour une app Flutter : `pay.appRoutes({...}).nextHandlers("/api/technas-pay")`, routes toutes faites que lit `TechnasPayClient`.
