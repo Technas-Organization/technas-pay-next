@@ -10,6 +10,8 @@ Carte bancaire : `method: "card"` + `currency`, seulement quand `getCardAccount(
 
 Pour une app Flutter : `pay.appRoutes({...}).nextHandlers("/api/technas-pay")`, routes toutes faites que lit `TechnasPayClient`.
 
+Seuil d'identité : en réel, sans pièce vérifiée, les nouveaux paiements mobile money sont refusés (`kyc_required`, 409, jamais à réessayer) au-delà du seuil lu par `getAccountKyc()` (`thresholdXof`, `graceDays`) ; avis `account.kyc_required` → `onKycRequired`. La carte n'est pas concernée.
+
 Hors zone franc CFA (Ghana, Nigeria…) : option `local` seulement, activée par l'utilisateur lui-même après avoir lu le risque (`getFxMode().risks.local`, puis `setFxMode({ mode: "local", acceptRisk: true })`) ; Technas ne couvre aucun risque de change. `converted` n'est pas ouvert (`fx_mode_unavailable`).
 
 - [AGENTS.md](AGENTS.md) : règles pour un agent de code, à appliquer dans l'application de l'utilisateur

@@ -600,3 +600,66 @@ test("remboursement par carte : la normalisation vient du cœur @technas/pay (\"
     assert.equal(recus[0].refund.kind, "card", `webhook depuis "${recu}"`);
   }
 });
+
+const KYC = {
+  applies: true, stage: "soon", level: "none", days_elapsed: 24, warn_from_xof: 800000, warn_from_date: "2026-11-20T00:00:00Z",
+  collected_xof: 812500, threshold_xof: 1000000, grace_days: 30, first_collected_at: "2026-10-22T09:00:00Z",
+  deadline: "2026-11-21T09:00:00Z", waiver_until: null, blocked: false, reason: "amount", console_url: "https://console.test/kyc",
+};
+
+test("getAccountKyc lit GET /v1/account/kyc avec la clé d'API, et décode tous les champs", async () => {
+  const vus = [];
+  const pay = createTechnasPay({
+    secret: SECRET, baseUrl: "https://gw.test",
+    fetch: async (url, init) => { vus.push([init.method, new URL(url).pathname, init.headers.Authorization, init.body]); return Response.json(KYC); },
+  });
+  const kyc = await pay.getAccountKyc();
+  assert.deepEqual(vus, [["GET", "/v1/account/kyc", "Bearer pk_abc-DEF_123", undefined]]);
+  assert.deepEqual(kyc, {
+    applies: true, stage: "soon", level: "none", daysElapsed: 24, warnFromXof: 800000, warnFromDate: "2026-11-20T00:00:00Z",
+    collectedXof: 812500, thresholdXof: 1000000, graceDays: 30, firstCollectedAt: "2026-10-22T09:00:00Z",
+    deadline: "2026-11-21T09:00:00Z", waiverUntil: null, blocked: false, reason: "amount", consoleUrl: "https://console.test/kyc",
+  });
+});
+
+test("getAccountKyc : champs nuls gardés nuls, valeurs inconnues gardées telles quelles", async () => {
+  const brut = { ...KYC, applies: false, stage: "nouvel_etat", level: "autre", days_elapsed: null, warn_from_date: null, first_collected_at: null, deadline: null, waiver_until: null, reason: null, collected_xof: 0 };
+  const pay = createTechnasPay({ secret: SECRET, baseUrl: "https://gw.test", fetch: async () => Response.json(brut) });
+  const kyc = await pay.getAccountKyc();
+  assert.equal(kyc.stage, "nouvel_etat");
+  assert.equal(kyc.level, "autre");
+  for (const champ of ["daysElapsed", "warnFromDate", "firstCollectedAt", "deadline", "waiverUntil", "reason"]) assert.equal(kyc[champ], null, champ);
+  assert.equal(kyc.applies, false);
+  assert.equal(kyc.collectedXof, 0);
+});
+
+test("l'avis signé account.kyc_required arrive dans onKycRequired, avec un contenu typé", async () => {
+  const body = JSON.stringify({ id: "evt_k", type: "account.kyc_required", created_at: "x", data: { reason: "amount_80", collected_xof: 812500, threshold_xof: 1000000, deadline: null, blocked: false, console_url: "https://console.test/kyc" } });
+  let recu;
+  const pay = createTechnasPay({ secret: SECRET });
+  const res = await pay.webhookHandler({ onKycRequired: (e) => { recu = e; }, onCompleted: () => assert.fail() })(request(body, sign(body)));
+  assert.equal(res.status, 200);
+  assert.deepEqual(recu, {
+    id: "evt_k", type: "account.kyc_required", createdAt: "x",
+    kyc: { reason: "amount_80", collectedXof: 812500, thresholdXof: 1000000, deadline: null, blocked: false, consoleUrl: "https://console.test/kyc" },
+  });
+});
+
+test("kyc_required et contract_required (409) : consoleUrl, reason, version dans details, jamais à réessayer", async () => {
+  let corps;
+  const pay = createTechnasPay({ secret: SECRET, baseUrl: "https://gw.test", fetch: async () => Response.json(corps, { status: 409 }) });
+  corps = { code: "kyc_required", message: "m", console_url: "https://console.test/kyc", reason: "duration" };
+  await assert.rejects(pay.askForPayment(ASK), (e) =>
+    e instanceof TechnasPayError && e.code === "kyc_required" && e.status === 409 && e.retryable === false
+    && e.details.consoleUrl === "https://console.test/kyc" && e.details.reason === "duration");
+  corps = { code: "contract_required", message: "m", console_url: "https://console.test/contrat", version: "2026-11" };
+  await assert.rejects(pay.askForPayment(ASK), (e) =>
+    e.code === "contract_required" && e.retryable === false && e.details.version === "2026-11" && e.details.consoleUrl === "https://console.test/contrat");
+});
+
+test("Next : getAccountKyc passe par le cœur avec cache: no-store", async () => {
+  let init;
+  const pay = createTechnasPay({ secret: SECRET, baseUrl: "https://gw.test", fetch: async (_u, i) => { init = i; return Response.json(KYC); } });
+  assert.equal((await pay.getAccountKyc()).thresholdXof, 1000000);
+  assert.equal(init.cache, "no-store");
+});

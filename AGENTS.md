@@ -29,13 +29,14 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 | Faire payer par carte bancaire | d'abord un compte carte actif (section « Paiement par carte »), puis `pay.askForPayment({ method: "card", amount, currency, ... })` |
 | Ouvrir ou finir le compte carte | `pay.startCardOnboarding({ country, returnUrl, refreshUrl })`, puis rediriger le RESPONSABLE vers `url` |
 | Savoir si la carte est ouverte | `(await pay.getCardAccount()).canAcceptPayments`, ou webhook `onCardAccountUpdated` |
+| Afficher au marchand son seuil d'identité | `pay.getAccountKyc()` ; webhook `onKycRequired` (`account.kyc_required`) pour prévenir le responsable |
 | Tableau de bord carte (virements, banque, litiges) | `pay.getCardDashboardLink()` → tableau de bord du compte carte, identifiants du responsable |
 | Tester la route webhook | `pay.createTestWebhook(type, paiement)` |
 | Jouer le payeur en test (réussi, refusé, expiré) | `pay.simulateTestPayment(id, "completed" \| "failed" \| "expired")` |
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.10.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.11.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -135,6 +136,7 @@ Ne réécrivez pas de routes : `export const { GET, POST } = pay.appRoutes({ aut
 - **`onRefund`** : prévenez le client, par e-mail ou SMS. Technas ne lui écrit pas.
   - `refund.completed` : l'argent est arrivé, `sentAmount` sur son téléphone.
   - `refund.failed` : rien n'est parti et votre solde est recrédité. Proposez un autre moyen, ou refaites le même appel `refund` : il est permis après un échec.
+- **`onKycRequired`** : seuil d'identité proche ou atteint. Prévenez le responsable du compte (`event.kyc.consoleUrl`), pas le client.
 
 ## Paiement par carte (`method: "card"`)
 
@@ -176,8 +178,19 @@ Ce n'est PAS le même parcours que le mobile money. Ne le proposez que si l'util
   - N'appelez jamais `refund` pour un remboursement déjà fait à la main : le client serait remboursé deux fois.
 - **Total remboursé** : `payment.refundedAmount` additionne les deux sortes.
 
+## Seuil d'identité
+
+En réel, un compte sans pièce d'identité vérifiée voit ses NOUVEAUX paiements mobile money refusés (`kyc_required`, 409) au-delà de 1 000 000 F CFA encaissés en cumul, ou 30 jours après son premier paiement réel encaissé. Rien de ce qui existe n'est bloqué : paiement en cours, remboursement, reversement, lecture. La carte n'est pas concernée. Le responsable du compte dépose sa pièce dans la console (`consoleUrl`).
+
+- **Afficher l'état au MARCHAND** (jamais au client final), dans un composant serveur ou une route : `await pay.getAccountKyc()` rend `stage` (`ok`, `soon`, `blocked`, `verified`, `not_applicable`), `collectedXof`, `thresholdXof`, `graceDays`, `deadline`, `reason` et `consoleUrl`. Une valeur inconnue de `stage` arrive telle quelle : affichez-la sans planter.
+- **Prévenir le responsable** : ajoutez `onKycRequired` à la route webhook (avis `account.kyc_required`, envoyé à 80 % du seuil, 7 jours avant l'échéance, puis au premier refus). `event.kyc.reason` vaut `amount_80`, `deadline_7d` ou `blocked`.
+- **Sur `kyc_required`** : ne réessayez jamais. Proposez la carte si elle est ouverte, sinon expliquez au client que le paiement mobile money n'est pas disponible pour le moment.
+- **Les chiffres (1 000 000, 30) viennent de l'API** (`thresholdXof`, `graceDays`) : ne les écrivez jamais en dur dans le code.
+
 ## Erreurs
 
+- `kyc_required` (409) : nouveau paiement mobile money refusé tant que la pièce d'identité n'est pas vérifiée. `error.details.consoleUrl` (où le responsable la dépose) et `error.details.reason` (`amount` ou `duration`). Pas à réessayer : voir « Seuil d'identité ».
+- `contract_required` (409) : le responsable doit accepter le contrat `error.details.version` dans la console (`error.details.consoleUrl`). Pas à réessayer.
 - `card_account_not_ready` (409) : paiement par carte demandé sans compte carte actif. Voir « Paiement par carte ».
 - `card_payments_unavailable` (503) : la carte n'est pas encore ouverte chez Technas. Proposez le mobile money.
 - `currency_required` : `method: "card"` sans `currency`.
@@ -192,6 +205,8 @@ Ce n'est PAS le même parcours que le mobile money. Ne le proposez que si l'util
 | `invalid_amount`, `amount_too_low` | Montant entier positif, assez grand pour couvrir les frais |
 | `currency_not_enabled` | Devise non ouverte sur ce compte : contacter Technas |
 | `currency_conversion_unavailable` | Client hors zone CFA, mode de change `none` : ne pas proposer ce pays ; voir `getFxMode()` |
+| `kyc_required` | Pièce d'identité à vérifier : ne pas réessayer ; proposer la carte, ou dire au client que le mobile money n'est pas disponible pour le moment ; prévenir le responsable (`error.details.consoleUrl`) |
+| `contract_required` | Le responsable accepte le contrat `error.details.version` dans la console (`error.details.consoleUrl`) ; ne pas réessayer |
 | `country_not_allowed` | Le marchand ne vend pas dans ce pays : ne pas le proposer |
 | `country_not_available` | Pays pas prêt : `error.details.reason` dit quoi (`no_payout_number`…) |
 | `risk_not_accepted` | Montrer `error.details.risk` à l'utilisateur ; n'activer qu'avec son accord explicite |
