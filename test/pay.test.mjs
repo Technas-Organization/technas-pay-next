@@ -739,3 +739,51 @@ test("le client change d'offre après expiration : nouvel essai, jamais l'ancien
     { reference: "F-1", amount: 7500 },
   ]);
 });
+
+test("appRoutes(...).nextHandlers sert POST /payments/{id}/cancel : contrôle de la commande, puis annulation", async () => {
+  const corps = (extra) => ({ id: "pay_1", reference: "42-1", amount: 5000, currency: "XOF", commission: 100, net_amount: 4900,
+    status: "pending", checkout_url: "https://c.test/pay_1", metadata: {}, test_mode: true, created_at: "x",
+    expires_at: "2026-11-16T10:00:00Z", ...extra });
+  const calls = [];
+  let init0;
+  const pay = createTechnasPay({
+    secret: SECRET,
+    baseUrl: "https://gw.test",
+    fetch: async (url, init) => {
+      init0 ??= init;
+      calls.push(`${init.method} ${new URL(url).pathname}`);
+      if (init.method === "GET") return Response.json(corps());
+      return Response.json(corps({ status: "expired", checkout_url: null, canceled_at: "2026-11-16T09:00:00Z", cancel_reason: "canceled_by_partner" }));
+    },
+  });
+  const { GET, POST } = pay
+    .appRoutes({
+      authorize: (req) => (req.headers.authorization === "Bearer jeton" ? { id: "u1" } : null),
+      resolveOrder: (orderId, user) => (orderId === "42" && user.id === "u1" ? { amount: 5000, customer: { email: "awa@exemple.tg", name: "Awa Mensah" } } : null),
+    })
+    .nextHandlers("/api/technas-pay");
+  assert.equal(typeof GET, "function");
+  const res = await POST(new Request("https://app.test/api/technas-pay/payments/pay_1/cancel", { method: "POST", headers: { Authorization: "Bearer jeton" } }));
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    payment: { id: "pay_1", reference: "42-1", status: "expired", checkout_url: null, amount: 5000, currency: "XOF", expires_at: "2026-11-16T10:00:00Z", method: "mobile_money" },
+  });
+  assert.deepEqual(calls, ["GET /v1/payments/pay_1", "POST /v1/payments/pay_1/cancel"]);
+  assert.equal(init0.cache, "no-store", "réglage Next gardé");
+  const anonyme = await POST(new Request("https://app.test/api/technas-pay/payments/pay_1/cancel", { method: "POST" }));
+  assert.equal(anonyme.status, 401);
+  assert.equal(calls.length, 2);
+});
+
+test("cancelPayment (cœur) : paiement expiré, canceledAt ; identifiant invalide refusé sans appel", async () => {
+  const pay = createTechnasPay({
+    secret: SECRET,
+    fetch: async () => Response.json({ id: "pay_1", reference: "F-1", amount: 300, currency: "XOF", commission: 6, net_amount: 294,
+      status: "expired", checkout_url: null, metadata: {}, test_mode: true, created_at: "x",
+      canceled_at: "2026-11-16T09:00:00Z", cancel_reason: "canceled_by_partner" }),
+  });
+  const p = await pay.cancelPayment("pay_1");
+  assert.deepEqual([p.status, p.checkoutUrl, p.canceledAt, p.cancelReason, canRetry(p)], ["expired", null, "2026-11-16T09:00:00Z", "canceled_by_partner", true]);
+  const sansAppel = createTechnasPay({ secret: SECRET, fetch: () => assert.fail("aucun appel attendu") });
+  await assert.rejects(sansAppel.cancelPayment("../balance"), (e) => e instanceof TechnasPayError && e.code === "invalid_request");
+});
