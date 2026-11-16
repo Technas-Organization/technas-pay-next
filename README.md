@@ -11,7 +11,7 @@ Vous intégrez avec un assistant de code ? Dites-lui de lire [AGENTS.md](AGENTS.
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.12.0
+npm install github:Technas-Organization/technas-pay-next#v0.13.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -241,7 +241,7 @@ if (canRetry(p)) {
 
 #### Le client change d'offre ou revient plus tard
 
-Une référence = un essai : une autre offre, ou un retour après expiration, c'est un NOUVEL essai avec `retryReference(factureId, n + 1)`. Réutiliser la référence d'un autre montant lève `reference_conflict` (409), celle d'un essai expiré `payment_expired` (409) ; les routes toutes faites le font seules. Un essai `pending` ou `failed` ne bloque jamais un nouvel essai demandé par le client. La facture n'est payée que sur `payment.completed` (jamais sur `returnUrl`). Au retour du client, relisez le dernier essai avec `getPayment` avant de répondre. Si le client a payé deux pages, n'activez rien deux fois et remboursez l'essai en trop avec `refund`.
+Une référence = un essai : une autre offre, ou un retour après expiration, c'est un NOUVEL essai avec `retryReference(factureId, n + 1)`. Réutiliser la référence d'un autre montant lève `reference_conflict` (409), celle d'un essai expiré `payment_expired` (409) ; les routes toutes faites le font seules. Un essai `pending` ou `failed` ne bloque jamais un nouvel essai demandé par le client : même offre, renvoyez-le sur la même page ; autre offre, ANNULEZ l'ancien essai (`cancelPayment`), puis créez le nouveau avec une NOUVELLE référence. Si l'annulation répond `payment_in_progress` (demande en cours chez l'opérateur), ne créez PAS de second paiement : attendez l'avis de l'issue. `payment_already_completed` : le client a payé l'ancienne offre, relisez le paiement et ne créez rien. Un paiement annulé reste `expired` (`canRetry` vaut `true`), avec `canceledAt` ; son avis `payment.expired` porte `reason` = `canceled` (`timeout` pour un lien expiré). La facture n'est payée que sur `payment.completed` (jamais sur `returnUrl`). Au retour du client, relisez le dernier essai avec `getPayment` avant de répondre. Si le client a payé deux pages, n'activez rien deux fois et remboursez l'essai en trop avec `refund`.
 
 ```ts
 // app/factures/actions.ts : au clic « Payer » (Server Action)
@@ -256,8 +256,18 @@ export async function payer(factureId: string, offreId: string) {
   if (facture.dernierPaymentId) {
     const dernier = await pay.getPayment(facture.dernierPaymentId); // Technas, pas seulement la base
     if (dernier.status === "completed") redirect(`/factures/${factureId}`); // déjà payée
+    const memeOffre = dernier.amount === offre.montant;
+    if (memeOffre && dernier.status !== "expired" && dernier.checkoutUrl) {
+      redirect(dernier.checkoutUrl); // pending ou failed : même page, le client peut encore payer
+    }
+    if (dernier.status !== "expired") {
+      // Autre offre : l'ancien lien est fermé d'abord. payment_in_progress (demande en cours chez
+      // l'opérateur) et payment_already_completed (il vient d'être payé) remontent : on ne crée
+      // alors AUCUN second paiement.
+      await pay.cancelPayment(dernier.id);
+    }
   }
-  // pending, failed, expired ou autre montant : un NOUVEL essai, jamais un refus.
+  // Ancien essai annulé ou expiré : un NOUVEL essai, avec une nouvelle référence.
   const n = facture.essais + 1;
   const p = await pay.askForPayment({
     amount: offre.montant,
@@ -304,6 +314,8 @@ export const { GET, POST } = pay
   })
   .nextHandlers("/api/technas-pay");
 ```
+
+Routes : `GET /methods?orderId=`, `POST /payments` `{orderId, method?}`, `GET /payments/{id}`, `POST /payments/{id}/cancel` (le client change d'offre), `POST /webhook`. Si la commande a changé de montant, `POST /payments` annule lui-même l'ancien essai encore ouvert ; payé (`payment_already_completed`) ou demande en cours (`payment_in_progress`) : aucun second paiement, l'erreur (409) est rendue à l'app.
 
 Côté app : `TechnasPayClient(baseUrl: 'https://votre-site.com/api/technas-pay')`. Ajoutez `card: true` et `authorizeAdmin` pour la carte. Détails : README de [`@technas/pay`](https://github.com/Technas-Organization/technas-pay-node#pour-une-app-mobile--les-routes-toutes-faites).
 
@@ -449,7 +461,7 @@ const kyc = await pay.getAccountKyc();
 - **Un même événement peut arriver plusieurs fois.** Technas relivre tant que votre route ne répond pas 2xx, pendant environ 3 jours. `event.id` permet d'ignorer un doublon.
 - **Un refus n'est pas définitif.** Le client peut réessayer sur la même page, et `onCompleted` arriver après `onFailed`. Seul `expired` l'est (voir « La règle de relance »).
 - **Retour au site sur succès seulement.** Après un refus ou un abandon, le client reste sur la page de paiement.
-- **Une référence = un essai.** Relancer `askForPayment` avec la même référence rend le même essai (utile après une coupure). Pour une nouvelle tentative (après `payment.expired`, ou quand le client change d'offre), utilisez une NOUVELLE référence ; l'ancienne lève `payment_expired` (essai expiré) ou `reference_conflict` (autre montant).
+- **Une référence = un essai.** Relancer `askForPayment` avec la même référence rend le même essai (utile après une coupure). Pour une nouvelle tentative (après `payment.expired`, ou quand le client change d'offre), utilisez une NOUVELLE référence ; l'ancienne lève `payment_expired` (essai expiré) ou `reference_conflict` (autre montant). Autre offre : `cancelPayment` sur l'ancien essai d'abord ; `payment_already_completed` (409) dit qu'il est payé, ne créez rien.
 - **Reprise.** Si `error.retryable` est vrai, refaites le même appel avec la même référence.
 
 ## Autres fonctions
@@ -458,6 +470,7 @@ const kyc = await pay.getAccountKyc();
 |---|---|
 | `pay.getPayment(id)` | État d'un paiement |
 | `pay.getPaymentByReference(reference)` | Rattraper un webhook manqué |
+| `pay.cancelPayment(id)` | Annuler un paiement que personne n'a commencé à payer (le client change d'offre) : rendu `expired`, sans lien ; `payment_already_completed` ou `payment_in_progress` (409) sinon |
 | `pay.refund(paymentId, { amount?, fees?, reference? })` / `pay.getRefund(id)` | Rembourser au numéro qui a payé (voir plus haut) |
 | `pay.recordExternalRefund(paymentId, { amount, method, note?, recordedBy? })` | Enregistrer un remboursement fait hors Technas |
 | `pay.topUpBalance({ amount, currency })` | Recharger votre solde, sans commission |

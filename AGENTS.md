@@ -15,6 +15,7 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 | Faire payer une commande | `pay.askForPayment({ amount, reference, customer: { email, name }, returnUrl })`, puis `redirect(checkoutUrl)` |
 | Savoir qu'elle est payée | webhook `onCompleted`, dans `app/api/technas-pay/route.ts` |
 | Rattraper un webhook manqué | `pay.getPaymentByReference(reference)` |
+| Annuler un paiement que personne n'a commencé à payer (autre offre) | `pay.cancelPayment(id)` → paiement `expired`, `checkoutUrl` null, `canceledAt` |
 | Savoir si on peut relancer le client | webhook `onExpired` (`payment.expired`), ou `canRetry(await pay.getPayment(id))` |
 | Rembourser un client | `pay.refund(paymentId, { amount?, fees?, reference? })` |
 | Noter un remboursement fait hors Technas (Flooz, T-Money, espèces) | `pay.recordExternalRefund(paymentId, { amount, method, note?, recordedBy? })` |
@@ -33,11 +34,11 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 | Tableau de bord carte (virements, banque, litiges) | `pay.getCardDashboardLink()` → tableau de bord du compte carte, identifiants du responsable |
 | Tester la route webhook | `pay.createTestWebhook(type, paiement)` |
 | Jouer le payeur en test (réussi, refusé, expiré) | `pay.simulateTestPayment(id, "completed" \| "failed" \| "expired")` |
-| Le client change d'offre ou revient plus tard | nouvel essai `retryReference(factureId, n + 1)` ; au retour, `pay.getPayment(dernierPaymentId)` d'abord (section « Le client change d'offre ou revient plus tard ») |
+| Le client change d'offre ou revient plus tard | `pay.cancelPayment(ancienId)`, puis nouvel essai `retryReference(factureId, n + 1)` ; au retour, `pay.getPayment(dernierPaymentId)` d'abord (section « Le client change d'offre ou revient plus tard ») |
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.12.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.13.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
@@ -54,7 +55,7 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 
 ## App mobile (Flutter)
 
-Ne réécrivez pas de routes : `export const { GET, POST } = pay.appRoutes({ authorize, resolveOrder, returnUrl, webhooks, card?, authorizeAdmin? }).nextHandlers("/api/technas-pay")` dans `app/api/technas-pay/[...path]/route.ts`. `resolveOrder(orderId, user)` relit la commande EN BASE et rend `null` si elle n'est pas à cet utilisateur. Côté app : `TechnasPayClient(baseUrl: '.../api/technas-pay')`.
+Ne réécrivez pas de routes : `export const { GET, POST } = pay.appRoutes({ authorize, resolveOrder, returnUrl, webhooks, card?, authorizeAdmin? }).nextHandlers("/api/technas-pay")` dans `app/api/technas-pay/[...path]/route.ts`. `resolveOrder(orderId, user)` relit la commande EN BASE et rend `null` si elle n'est pas à cet utilisateur. Routes : `GET /methods`, `POST /payments`, `GET /payments/{id}`, `POST /payments/{id}/cancel`, `POST /webhook` (toutes servies par ces `GET` et `POST`). Le client change d'offre : l'app appelle `POST /payments/{id}/cancel` sur l'essai affiché, puis `POST /payments` ; si la commande a changé de montant, `POST /payments` annule lui-même l'ancien essai encore ouvert (`payment_in_progress` ou `payment_already_completed`, 409 : aucun second paiement). Côté app : `TechnasPayClient(baseUrl: '.../api/technas-pay')`.
 
 ## Obligatoire
 
@@ -134,7 +135,8 @@ La règle de relance vise VOS relances. Quand c'est le client qui revient ou cho
 
 - **Une référence = un essai.** Nouvelle offre, ou retour après expiration : un NOUVEL essai, avec une nouvelle référence `retryReference(factureId, n + 1)` (`n` gardé en base). Réutiliser la référence d'un autre montant lève `reference_conflict` (409) ; celle d'un essai expiré, `payment_expired` (409). Les routes toutes faites (`appRoutes`) le font seules.
 - **Une facture n'est payée QUE sur `payment.completed`** (avis signé, `onCompleted`). Jamais sur `returnUrl`, jamais à l'ouverture de la page.
-- **Un essai non payé ne bloque jamais un nouvel essai.** `pending` ou `failed` et le client change d'offre : créez le nouvel essai, ne refusez pas. `expired` : marquez la tentative expirée et laissez recommencer.
+- **Un essai non payé ne bloque jamais un nouvel essai.** Même offre et essai `pending` ou `failed` : renvoyez le client sur la même page (`checkoutUrl`). Autre offre : ANNULEZ l'ancien essai (`pay.cancelPayment(ancienId)`), puis créez le nouveau avec une NOUVELLE référence ; ne refusez pas. `expired` : marquez la tentative expirée et laissez recommencer.
+- **`cancelPayment` refuse quand c'est trop tard** : `payment_already_completed` (le client a payé l'ancienne offre : relisez le paiement, ne créez rien) ; `payment_in_progress` (une demande est en cours chez l'opérateur : ne créez PAS de second paiement, attendez l'avis de l'issue). Un paiement annulé reste `expired` (`canRetry` vaut `true`), avec `canceledAt` et `cancelReason` ; son avis `payment.expired` porte `reason` = `canceled` (`timeout` pour un lien expiré, `null` dans un avis ancien).
 - **Au retour du client**, vérifiez avec `pay.getPayment(dernierPaymentId)` avant de dire quoi que ce soit ; ne vous fiez jamais seulement à votre propre base.
 - **Un ancien essai payé APRÈS le nouveau** (le client a payé les deux pages) : n'activez rien deux fois ; remboursez l'essai en trop avec `pay.refund(paymentId)`.
 
@@ -153,8 +155,18 @@ export async function payer(factureId: string, offreId: string) {
   if (facture.dernierPaymentId) {
     const dernier = await pay.getPayment(facture.dernierPaymentId); // Technas, pas seulement la base
     if (dernier.status === "completed") redirect(`/factures/${factureId}`); // déjà payée
+    const memeOffre = dernier.amount === offre.montant;
+    if (memeOffre && dernier.status !== "expired" && dernier.checkoutUrl) {
+      redirect(dernier.checkoutUrl); // pending ou failed : même page, le client peut encore payer
+    }
+    if (dernier.status !== "expired") {
+      // Autre offre : l'ancien lien est fermé d'abord. payment_in_progress (demande en cours chez
+      // l'opérateur) et payment_already_completed (il vient d'être payé) remontent : on ne crée
+      // alors AUCUN second paiement.
+      await pay.cancelPayment(dernier.id);
+    }
   }
-  // pending, failed, expired ou autre montant : un NOUVEL essai, jamais un refus.
+  // Ancien essai annulé ou expiré : un NOUVEL essai, avec une nouvelle référence.
   const n = facture.essais + 1;
   const p = await pay.askForPayment({
     amount: offre.montant,
@@ -266,8 +278,9 @@ En réel, un compte sans pièce d'identité vérifiée voit ses NOUVEAUX paiemen
 | `risk_not_accepted` | Montrer `error.details.risk` à l'utilisateur ; n'activer qu'avec son accord explicite |
 | `fx_mode_unavailable`, `fx_channel_unavailable` | Mode `converted` pas ouvert : proposer `local` (avec l'accord de l'utilisateur sur le risque) ou rester en `none` |
 | `quote_expired` | Le client rechoisit son pays sur la page, rien à faire côté code |
-| `reference_conflict` | Même référence, autres valeurs (le client a changé d'offre) : nouvel essai `retryReference(id, n + 1)`, jamais la même référence |
-| `payment_in_progress` | Réessayer dans une minute, même appel |
+| `reference_conflict` | Même référence, autres valeurs (le client a changé d'offre) : `cancelPayment` sur l'ancien essai, puis nouvel essai `retryReference(id, n + 1)`, jamais la même référence |
+| `payment_in_progress` | Réessayer dans une minute, même appel. Sur `cancelPayment` : ne créez PAS de second paiement, attendez l'avis de l'issue |
+| `payment_already_completed` | `cancelPayment` : le paiement est déjà payé. Relire le paiement ; ne créer aucun nouvel essai |
 | `payment_not_found`, `refund_not_found` | Mauvais identifiant ou autre compte |
 | `payment_expired` | Cette référence est un essai expiré : nouveau paiement avec une NOUVELLE référence, jamais le même appel |
 | `payment_not_refundable` | Seul un paiement `completed` se rembourse |
