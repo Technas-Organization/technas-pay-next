@@ -22,3 +22,5 @@ Hors zone franc CFA (Ghana, Nigeria…) : option `local` seulement, activée par
 - [example/](example) : application Next.js d'exemple
 
 Frais : `fees: "customer"` (le client paie frais du réseau + commission ; vous recevez exactement `amount`) ou `"partner"` (le client paie `amount`, frais compris). Devis avant paiement, côté serveur : `pay.quote({ amount, country, fees? })` / `pay.getFees` → `customerTotal` (à afficher), `processingFee`, `commission`, `netAmount`, `networks[]` (dont `operatorFeeEstimate`, « environ »). `amount_too_low` → `error.details.minimumAmount`. Carte : `"partner"` seulement.
+
+Moyens et réseaux : constantes `PAYMENT_METHODS` et `NETWORKS` (`mixx`, `moov`, `mtn_momo`, `orange_money`, `wave`…), `pay.getPaymentMethods(country?)`, `pay.setPaymentMethods({ methods?, networks?, networkOrder? })`, `networks` par paiement, `payment.network`. Le `network` d'un devis est un réseau de `NETWORKS` (`togocel` reste accepté en entrée).

@@ -11,7 +11,7 @@ Vous intégrez avec un assistant de code ? Dites-lui de lire [AGENTS.md](AGENTS.
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.16.0
+npm install github:Technas-Organization/technas-pay-next#v0.17.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -84,6 +84,27 @@ const p = await pay.quote({ amount: 1000, country: "TG", fees: "partner" });
 - L'opérateur du client (Mixx by Yas, Moov…) peut prendre ses propres frais sur le téléphone, en dehors de Technas : `networks[i].operatorFeeEstimate` en donne une estimation quand on la connaît (« environ »), jamais une promesse.
 - Montant trop petit : `amount_too_low` avec `error.details.minimumAmount`. Au Togo, le réseau n'accepte rien sous 200 F : en `"partner"`, 209 F au minimum ; en `"customer"`, 200 F passent.
 - Par carte, seulement `"partner"` : ajouter des frais au paiement par carte d'un consommateur est interdit en Europe. `pay.quote({ amount: 20, method: "card", currency: "EUR" })` rend la commission (`netAmount` null : les frais de la carte dépendent de la carte du client).
+
+### Les moyens et les réseaux : à vous de choisir
+
+Les moyens (`PAYMENT_METHODS` : `"mobile_money"`, `"card"`) et les réseaux mobile money (`NETWORKS` : `"mixx"` pour Mixx by Yas, `"moov"` pour Moov Money / Flooz, `"mtn_momo"`, `"orange_money"`, `"wave"`…) sont des listes fermées, typées, à énumérer. Un réseau, c'est le porte-monnaie que le client a dans sa poche.
+
+```ts
+import { NETWORKS, PAYMENT_METHODS } from "@technas/pay-next";
+
+const ouverts = await pay.getPaymentMethods("TG");
+// ouverts.networks : [{ network: "mixx", name: "Mixx by Yas", country: "TG", enabled: true }, …] dans VOTRE ordre
+
+// Réglage du compte : éteindre la carte, mettre Mixx en premier
+await pay.setPaymentMethods({ methods: ["mobile_money"], networkOrder: ["mixx", "moov"] });
+
+// Pour un paiement : seulement certains réseaux
+await pay.askForPayment({ amount: 5000, reference, customer, returnUrl, networks: ["mixx"] });
+```
+
+- `payment.network` : le réseau avec lequel le client a payé (une fois payé).
+- Refus : `method_not_enabled` (moyen éteint sur votre compte), `network_not_enabled` (réseau éteint sur votre compte), `network_not_available` (pas ouvert dans ce pays).
+- La page de paiement Technas et les devis respectent vos réseaux et leur ordre. L'étape où le client confirme sur la page du réseau de paiement peut encore lui montrer tous les réseaux du pays : ce sera fermé dans une prochaine version.
 
 ### La devise
 
