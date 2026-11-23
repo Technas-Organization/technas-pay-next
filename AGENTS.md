@@ -38,7 +38,7 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.14.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.15.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
