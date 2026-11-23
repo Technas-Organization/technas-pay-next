@@ -17,6 +17,8 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 | Rattraper un webhook manqué | `pay.getPaymentByReference(reference)` |
 | Annuler un paiement que personne n'a commencé à payer (autre offre) | `pay.cancelPayment(id)` → paiement `expired`, `checkoutUrl` null, `canceledAt` |
 | Savoir si on peut relancer le client | webhook `onExpired` (`payment.expired`), ou `canRetry(await pay.getPayment(id))` |
+| Savoir combien le client paiera et combien vous recevrez, avant de créer le paiement | `pay.quote({ amount, country, fees? })` (ou `pay.getFees`), côté serveur → `customerTotal` (à afficher au client), `processingFee`, `commission`, `netAmount`, `networks[]` |
+| Faire payer TOUS les frais au client (vous recevez exactement `amount`) | `fees: "customer"` dans `askForPayment` (ou réglage du compte) ; `"partner"` : le client paie `amount`, frais compris |
 | Rembourser un client | `pay.refund(paymentId, { amount?, fees?, reference? })` |
 | Noter un remboursement fait hors Technas (Flooz, T-Money, espèces) | `pay.recordExternalRefund(paymentId, { amount, method, note?, recordedBy? })` |
 | Savoir que le remboursement est arrivé | webhook `onRefund` (`refund.completed`, `refund.failed` ou `refund.recorded`) |
@@ -38,7 +40,7 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.15.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.16.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";

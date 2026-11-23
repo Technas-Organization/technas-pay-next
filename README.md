@@ -2,7 +2,7 @@
 
 Encaissez des paiements via Technas depuis une application Next.js 13.4 ou plus récente.
 
-**Technas Pay réunit le mobile money et la carte dans un seul SDK, du serveur jusqu'à l'app Flutter.** Carte : 1 % (plus les frais de votre compte carte, selon le pays : environ 1,5 % + 0,25 € en Europe). Mobile money : 2 % (les frais de l'opérateur sont payés par le client). Sans abonnement, et une clé de test sans papier pour commencer.
+**Technas Pay réunit le mobile money et la carte dans un seul SDK, du serveur jusqu'à l'app Flutter.** Carte : 1 % (plus les frais de votre compte carte, selon le pays : environ 1,5 % + 0,25 € en Europe). Mobile money : 2 %, et vous choisissez qui paie les frais : le client (vous recevez exactement votre prix) ou vous (le client paie votre prix) ; `pay.quote` dit les montants avant le paiement. Sans abonnement, et une clé de test sans papier pour commencer.
 
 Devises et pays, pièces demandées, versements, comparaison avec les autres prestataires : [le hub Technas Pay](https://github.com/Technas-Organization/technas-pay).
 
@@ -11,7 +11,7 @@ Vous intégrez avec un assistant de code ? Dites-lui de lire [AGENTS.md](AGENTS.
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.15.0
+npm install github:Technas-Organization/technas-pay-next#v0.16.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
@@ -53,6 +53,37 @@ export async function payerCommande(commandeId: string) {
 ```
 
 Calculez le montant côté serveur, jamais à partir d'une valeur envoyée par le navigateur.
+
+### Qui paie les frais, et combien paie le client
+
+Deux modes, en mobile money (franc CFA). Le mode par défaut est celui de votre compte (demandez à Technas de le changer) ; chaque paiement peut le surcharger avec `fees`.
+
+| `fees` | Le client paie | Vous recevez |
+|---|---|---|
+| `"customer"` | votre prix + les frais du réseau de paiement + la commission Technas | **exactement votre prix** |
+| `"partner"` | **votre prix**, frais compris | votre prix − les frais |
+
+Pour savoir AVANT de créer le paiement combien le client paiera (le montant à lui afficher) et combien vous recevrez :
+
+```ts
+// Dans une route serveur ou un Server Component (jamais côté client)
+const q = await pay.quote({ amount: 200, country: "TG", fees: "customer" });
+q.customerTotal;   // 214 : ce que le client paie (à afficher)
+q.processingFee;   // 9   : frais du réseau de paiement
+q.commission;      // 5   : commission Technas (2 %)
+q.netAmount;       // 200 : ce que vous recevez
+q.networks;        // le détail réseau par réseau (Mixx by Yas, Moov Money…)
+
+const p = await pay.quote({ amount: 1000, country: "TG", fees: "partner" });
+// p.customerTotal 1000, p.processingFee 40, p.commission 20, p.netAmount 940
+```
+
+- `pay.getFees(...)` est le même appel que `pay.quote(...)`. Rien n'est créé.
+- Un paiement créé ensuite avec le même montant, le même pays et le même `fees` porte les mêmes montants : `payment.customerTotal`, `payment.processingFee`, `payment.netAmount`. `payment.amount` reste votre prix.
+- Les frais du réseau de paiement suivent la grille du réseau. Le client choisit son réseau sur la page de paiement : `customerTotal` est le plus haut des réseaux possibles, `networks[i].customerTotal` le montant exact de chacun.
+- L'opérateur du client (Mixx by Yas, Moov…) peut prendre ses propres frais sur le téléphone, en dehors de Technas : `networks[i].operatorFeeEstimate` en donne une estimation quand on la connaît (« environ »), jamais une promesse.
+- Montant trop petit : `amount_too_low` avec `error.details.minimumAmount`. Au Togo, le réseau n'accepte rien sous 200 F : en `"partner"`, 209 F au minimum ; en `"customer"`, 200 F passent.
+- Par carte, seulement `"partner"` : ajouter des frais au paiement par carte d'un consommateur est interdit en Europe. `pay.quote({ amount: 20, method: "card", currency: "EUR" })` rend la commission (`netAmount` null : les frais de la carte dépendent de la carte du client).
 
 ### La devise
 
