@@ -11,7 +11,7 @@ Vous intégrez avec un assistant de code ? Dites-lui de lire [AGENTS.md](AGENTS.
 ## 1. Installer
 
 ```bash
-npm install github:Technas-Organization/technas-pay-next#v0.13.0
+npm install github:Technas-Organization/technas-pay-next#v0.14.0
 ```
 
 Le package se compile à l'installation et s'importe sous le nom `@technas/pay-next`.
