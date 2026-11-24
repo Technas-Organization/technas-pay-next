@@ -18,6 +18,8 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 | Annuler un paiement que personne n'a commencé à payer (autre offre) | `pay.cancelPayment(id)` → paiement `expired`, `checkoutUrl` null, `canceledAt` |
 | Savoir si on peut relancer le client | webhook `onExpired` (`payment.expired`), ou `canRetry(await pay.getPayment(id))` |
 | Savoir combien le client paiera et combien vous recevrez, avant de créer le paiement | `pay.quote({ amount, country, fees? })` (ou `pay.getFees`), côté serveur → `customerTotal` (à afficher au client), `processingFee`, `commission`, `netAmount`, `networks[]` |
+| Afficher un prix FIXE (le même quel que soit le réseau) et recevoir au moins X | `pay.displayPrice({ receive, country \| countries, roundTo? })`, côté serveur → `byCountry[pays].price`, `everywhere.price` ; puis `askForPayment({ amount: price, fees: "partner" })` (jamais `"customer"`) |
+| La grille des frais par pays et réseau (back-office) | `pay.getRates(country?)` (ou `pay.rates`) → `countries[].networks[]` : `percent`, `minimumAmount`, `commission`, `operatorFeeEstimate`, `example1000.customer/partner` |
 | Faire payer TOUS les frais au client (vous recevez exactement `amount`) | `fees: "customer"` dans `askForPayment` (ou réglage du compte) ; `"partner"` : le client paie `amount`, frais compris |
 | Lister les moyens et réseaux ouverts, ce qui est activé, l'ordre | `pay.getPaymentMethods(country?)` ; constantes `PAYMENT_METHODS`, `NETWORKS` (types `PaymentMethod`, `Network`) |
 | Activer / éteindre des moyens et réseaux, fixer l'ordre d'affichage | `pay.setPaymentMethods({ methods?, networks?, networkOrder? })` ; par paiement : `networks` dans `askForPayment` |
@@ -42,7 +44,7 @@ Consignes pour un assistant de code. Appliquez-les dans l'application de l'utili
 
 ## Étapes
 
-1. `npm install github:Technas-Organization/technas-pay-next#v0.17.0`
+1. `npm install github:Technas-Organization/technas-pay-next#v0.18.0`
 2. Créez `lib/pay.ts` :
    ```ts
    import { createTechnasPay } from "@technas/pay-next";
